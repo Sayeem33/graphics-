@@ -6,6 +6,7 @@
 #include "mesh.hpp"
 #include "shader.hpp"
 #include "track.hpp"
+#include "texture.hpp"
 #include <vector>
 #include <cmath>
 
@@ -54,6 +55,37 @@ struct Boat {
     BoatType type{BoatType::CABIN_CRUISER};
 };
 
+// 3D Collectible Coin
+struct Coin {
+    m3d::Vec3 position;
+    float baseHeight{0.0f};
+    float laneOffset{0.0f};
+    float rotationAngle{0.0f};
+    bool isCollected{false};
+    float respawnTimer{0.0f};
+    float collectAnimTimer{0.0f};
+    int id{0};
+};
+
+// Roadside Gas & Fuel Station
+struct GasStation {
+    m3d::Vec3 position;       // Canopy / lot center
+    float rotationY{0.0f};    // Facing angle in radians
+    std::string name;
+    m3d::Vec3 pumpBayCenter;  // Where vehicle pulls up to refuel
+    float refuelRadius{7.0f};
+};
+
+// Milestone Checkpoint Gate
+struct Milestone {
+    m3d::Vec3 position;
+    m3d::Vec3 forward;
+    float trackDistance{0.0f};
+    std::string name;
+    int index{1};
+    bool isReached{false};
+};
+
 class SceneManager {
 public:
     // Shared primitive meshes
@@ -76,23 +108,53 @@ public:
     Mesh roadStripesMesh;
     Mesh riverMesh;
 
+    // Central Texture Manager
+    TextureManager textures;
+
     // Environmental entities
     std::vector<TreeInstance> trees;
     std::vector<StreetLamp> streetLamps;
     std::vector<LightSource> tunnelCeilingLights;
     std::vector<Boat> boats;
 
+    // Game systems & Collectibles
+    int coinsCollected{3};           // Starts with 3 seed coins for refueling
+    float fuel{100.0f};              // 0.0 - 100.0 %
+    const float maxFuel{100.0f};
+    bool isNearGasStation{false};
+    int activeStationIdx{-1};
+    std::string activeStationName{""};
+    std::string notificationMessage{""};
+    float notificationTimer{0.0f};
+    int currentMilestoneIdx{0};
+    const int totalMilestones{5};
+    int lapsCompleted{0};
+
+    // Obstacle & World Border Collision State
+    bool isCollidingWithObstacle{false};
+    std::string activeObstacleName{""};
+    float collisionAlertTimer{0.0f};
+
+    std::vector<Coin> coins;
+    std::vector<GasStation> gasStations;
+    std::vector<Milestone> milestones;
+
     // Car state
-    m3d::Vec3 carPos{0.0f, 0.0f, 0.0f};
-    m3d::Vec3 carForward{0.0f, 0.0f, -1.0f};
+    m3d::Vec3 carPos{-48.0f, 0.0f, 30.0f};
+    m3d::Vec3 carForward{1.0f, 0.0f, 0.0f};
     m3d::Vec3 carUp{0.0f, 1.0f, 0.0f};
-    m3d::Vec3 carRight{1.0f, 0.0f, 0.0f};
+    m3d::Vec3 carRight{0.0f, 0.0f, 1.0f};
+    float carYaw{0.0f};          // Heading angle in radians (0 = facing East +X)
+    float carPitch{0.0f};
     float carDistance{0.0f};
     float carSpeed{0.0f};
     float wheelSpinAngle{0.0f};
     float wheelSteerAngle{0.0f};
     EnvironmentZone currentZone{EnvironmentZone::GARAGE};
     bool isJourneyComplete{false};
+    bool isManualDrive{true};    // User manual control by default
+    bool isBraking{false};
+    bool isReversing{false};
 
     // Environmental state
     bool isNight{false};
@@ -104,7 +166,497 @@ public:
 
     SceneManager() = default;
 
+    void triggerNotification(const std::string& msg, float duration = 2.5f) {
+        notificationMessage = msg;
+        notificationTimer = duration;
+    }
+
+    // Refuel car at Gas Station using collected coins
+    bool refuel() {
+        if (!isNearGasStation) {
+            triggerNotification("NOT AT GAS STATION! PULL INTO PUMP BAY", 2.2f);
+            return false;
+        }
+        if (fuel >= 99.5f) {
+            fuel = 100.0f;
+            triggerNotification("FUEL TANK ALREADY FULL (100%)", 2.0f);
+            return false;
+        }
+        if (coinsCollected < 1) {
+            triggerNotification("NO COINS! COLLECT ROAD COINS TO REFUEL", 2.5f);
+            return false;
+        }
+
+        // Spend 1 coin for +30% fuel
+        coinsCollected -= 1;
+        fuel = std::min(maxFuel, fuel + 30.0f);
+        triggerNotification("REFUELED +30%! [FUEL: " + std::to_string(static_cast<int>(fuel)) + "%]", 2.5f);
+        return true;
+    }
+
+    struct RoadSurfaceInfo {
+        m3d::Vec3 splinePoint;
+        float distToCenter{0.0f};
+        float elevation{0.0f};
+        float trackDistance{0.0f};
+        EnvironmentZone zone{EnvironmentZone::GARAGE};
+        bool isOnRoad{false}; // True if within road width/shoulder
+    };
+
+    RoadSurfaceInfo getRoadInfoAt(float x, float z, const Track& track) const {
+        RoadSurfaceInfo info;
+        int numWaypoints = static_cast<int>(track.waypoints.size());
+        if (numWaypoints == 0) return info;
+
+        // 1. High-density coarse search over spline segments (8 sub-samples per waypoint segment)
+        float bestT = 0.0f;
+        float minDistSq = 1e9f;
+        const int samplesPerSeg = 8;
+        const int totalSamples = numWaypoints * samplesPerSeg;
+
+        for (int s = 0; s < totalSamples; ++s) {
+            float t = static_cast<float>(s) / static_cast<float>(samplesPerSeg);
+            m3d::Vec3 p = track.evaluateSpline(t);
+            float dx = x - p.x;
+            float dz = z - p.z;
+            float d2 = dx * dx + dz * dz;
+            if (d2 < minDistSq) {
+                minDistSq = d2;
+                bestT = t;
+            }
+        }
+
+        // 2. High-precision Golden Section local refinement
+        float tA = bestT - 0.25f;
+        float tB = bestT + 0.25f;
+        for (int iter = 0; iter < 8; ++iter) {
+            float t1 = tA + (tB - tA) * 0.382f;
+            float t2 = tA + (tB - tA) * 0.618f;
+
+            m3d::Vec3 p1 = track.evaluateSpline(t1);
+            m3d::Vec3 p2 = track.evaluateSpline(t2);
+
+            float d1 = (x - p1.x) * (x - p1.x) + (z - p1.z) * (z - p1.z);
+            float d2 = (x - p2.x) * (x - p2.x) + (z - p2.z) * (z - p2.z);
+
+            if (d1 < d2) {
+                tB = t2;
+            } else {
+                tA = t1;
+            }
+        }
+        float optT = (tA + tB) * 0.5f;
+
+        // 3. Exact point on the spline centerline & continuous track distance
+        info.splinePoint = track.evaluateSpline(optT);
+        info.trackDistance = track.tToDistance(optT);
+        info.distToCenter = std::sqrt((x - info.splinePoint.x) * (x - info.splinePoint.x) +
+                                      (z - info.splinePoint.z) * (z - info.splinePoint.z));
+
+        // 4. Zone
+        int segIdx = static_cast<int>(std::floor(optT));
+        while (segIdx < 0) segIdx += numWaypoints;
+        segIdx %= numWaypoints;
+        info.zone = track.waypoints[segIdx].zone;
+
+        // 5. Road half-width is 3.6m. With 4.2m margin, car anywhere on road/curb is safely on road!
+        info.isOnRoad = (info.distToCenter <= 4.2f);
+
+        // 6. Smooth continuous elevation
+        float roadElev = info.splinePoint.y;
+        if (roadElev > 0.02f) {
+            if (info.distToCenter <= 4.2f) {
+                info.elevation = roadElev;
+            } else if (info.distToCenter < 7.0f) {
+                float blend = (7.0f - info.distToCenter) / 2.8f;
+                info.elevation = roadElev * (blend * blend * (3.0f - 2.0f * blend));
+            } else {
+                info.elevation = 0.0f;
+            }
+        } else {
+            info.elevation = 0.0f;
+        }
+
+        return info;
+    }
+
+    // Continuously and smoothly sample road surface elevation and active zone
+    float getRoadHeightAt(float x, float z, const Track& track, EnvironmentZone& outZone) const {
+        RoadSurfaceInfo info = getRoadInfoAt(x, z, track);
+        outZone = info.zone;
+        return info.elevation;
+    }
+
+    // Helper: Push circle (x, z, r) out of AABB box [minX, maxX] x [minZ, maxZ]
+    static bool pushOutOfBox(float& x, float& z, float minBx, float maxBx, float minBz, float maxBz, float r) {
+        float cx = m3d::clamp(x, minBx, maxBx);
+        float cz = m3d::clamp(z, minBz, maxBz);
+        float dx = x - cx;
+        float dz = z - cz;
+        float d2 = dx * dx + dz * dz;
+        if (d2 < r * r) {
+            if (d2 > 0.0001f) {
+                float d = std::sqrt(d2);
+                float push = r - d;
+                x += (dx / d) * push;
+                z += (dz / d) * push;
+            } else {
+                float leftDist = std::abs(x - minBx);
+                float rightDist = std::abs(maxBx - x);
+                float botDist = std::abs(z - minBz);
+                float topDist = std::abs(maxBz - z);
+                float minVal = std::min({leftDist, rightDist, botDist, topDist});
+                if (minVal == leftDist) x = minBx - r;
+                else if (minVal == rightDist) x = maxBx + r;
+                else if (minVal == botDist) z = minBz - r;
+                else z = maxBz + r;
+            }
+            return true;
+        }
+        return false;
+    }
+
+    // Resolve collision and push car out of any overlapping obstacle or map boundary.
+    // Returns true if a collision occurred. Position (x, z) is updated to be strictly valid outside the obstacle.
+    bool resolveCollision(float& x, float& z, const Track& track, std::string& hitName) const {
+        const float carRadius = 0.85f;
+        bool collided = false;
+
+        // 1. World Boundaries (Playable Map Perimeter)
+        const float minX = -84.0f, maxX = 84.0f;
+        const float minZ = -108.0f, maxZ = 68.0f;
+        if (x - carRadius < minX) { x = minX + carRadius; hitName = "WORLD BORDER"; collided = true; }
+        if (x + carRadius > maxX) { x = maxX - carRadius; hitName = "WORLD BORDER"; collided = true; }
+        if (z - carRadius < minZ) { z = minZ + carRadius; hitName = "WORLD BORDER"; collided = true; }
+        if (z + carRadius > maxZ) { z = maxZ - carRadius; hitName = "WORLD BORDER"; collided = true; }
+
+        // 2. Continuous Spline Road Information
+        RoadSurfaceInfo roadInfo = getRoadInfoAt(x, z, track);
+
+        // 3. Bridge Safety Railings (Covering elevated bridge deck and approach/exit ramps)
+        // Railings are placed at 3.25m from centerline (inner face at 3.14m).
+        // With car half-width ~0.90m, car center must not exceed 2.15m from centerline!
+        bool isBridgeArea = (roadInfo.zone == EnvironmentZone::BRIDGE) || 
+                            (roadInfo.splinePoint.y > 0.15f && x > -48.0f && x < 25.0f && z < -10.0f);
+        if (isBridgeArea) {
+            const float maxBridgeDist = 2.15f;
+            if (roadInfo.distToCenter > maxBridgeDist && roadInfo.distToCenter > 0.001f) {
+                float excess = roadInfo.distToCenter - maxBridgeDist;
+                float dirX = (roadInfo.splinePoint.x - x) / roadInfo.distToCenter;
+                float dirZ = (roadInfo.splinePoint.z - z) / roadInfo.distToCenter;
+                x += dirX * excess;
+                z += dirZ * excess;
+                hitName = "BRIDGE RAILING";
+                collided = true;
+            }
+            // While safely on the elevated bridge deck (Y > 0.8m), car cannot hit river or ground underneath
+            if (roadInfo.splinePoint.y > 0.8f) {
+                return collided;
+            }
+        }
+
+        // 4. Mountain Tunnel Barriers & Walls (Both Left and Right walls along the curved tunnel)
+        // Tunnel runs between Z = -20.5m (Entrance Portal WP 13) and Z = 11.0m (Exit Portal WP 16)
+        bool isTunnelTrack = (roadInfo.zone == EnvironmentZone::TUNNEL) && 
+                             (roadInfo.splinePoint.z >= -21.0f && roadInfo.splinePoint.z <= 11.5f && roadInfo.splinePoint.x <= -23.0f);
+        if (isTunnelTrack) {
+            if (roadInfo.distToCenter > 1.95f && roadInfo.distToCenter < 2.50f) {
+                // INSIDE THE TUNNEL:
+                // Concrete walls are at 3.95m; New Jersey barrier curb is at 2.75m.
+                // Clamping car center to 1.95m prevents outer body (~0.90m) from ever penetrating barrier or wall!
+                const float maxTunnelDist = 1.95f;
+                float excess = roadInfo.distToCenter - maxTunnelDist;
+                float dirX = (roadInfo.splinePoint.x - x) / roadInfo.distToCenter;
+                float dirZ = (roadInfo.splinePoint.z - z) / roadInfo.distToCenter;
+                x += dirX * excess;
+                z += dirZ * excess;
+                hitName = "TUNNEL WALL";
+                collided = true;
+            } else if (roadInfo.distToCenter >= 2.50f && roadInfo.distToCenter < 5.00f && x < -24.0f && z > -21.0f && z < 11.0f) {
+                // OUTSIDE THE TUNNEL (Driving on mountain hillside / grass outside the curved vault):
+                // Exterior tube has radius 4.2m. Clamping distance to >= 5.00m keeps car strictly outside the mountain!
+                const float minMountainDist = 5.00f;
+                float shortfall = minMountainDist - roadInfo.distToCenter;
+                float pushX = (x - roadInfo.splinePoint.x) / roadInfo.distToCenter;
+                float pushZ = (z - roadInfo.splinePoint.z) / roadInfo.distToCenter;
+                x += pushX * shortfall;
+                z += pushZ * shortfall;
+                hitName = "MOUNTAIN RIDGE";
+                collided = true;
+            }
+        }
+
+        // 5. River Water Barrier (When not on the elevated bridge)
+        // River flows between Z = -34.5 and Z = -57.0 from X = -36.0 to X = 20.0
+        if (roadInfo.splinePoint.y < 0.8f && z >= -57.0f && z <= -34.5f && x >= -36.0f && x <= 20.0f) {
+            if (z > -45.5f) {
+                z = -34.0f;
+            } else {
+                z = -57.5f;
+            }
+            hitName = "RIVER WATER";
+            collided = true;
+        }
+
+        // 6. Garage Main Building: [-59.5, -36.5] x [33.5, 42.5]
+        if (pushOutOfBox(x, z, -59.5f, -36.5f, 33.5f, 42.5f, carRadius)) {
+            hitName = "GARAGE BUILDING";
+            collided = true;
+        }
+
+        // 7. Metropolitan City Buildings
+        // Building A: [-17.5, -6.5] x [39.5, 50.5]
+        if (pushOutOfBox(x, z, -17.5f, -6.5f, 39.5f, 50.5f, carRadius)) {
+            hitName = "CITY BUILDING";
+            collided = true;
+        }
+        // Building B: [-1.5, 11.5] x [37.5, 46.5]
+        if (pushOutOfBox(x, z, -1.5f, 11.5f, 37.5f, 46.5f, carRadius)) {
+            hitName = "CITY TOWER";
+            collided = true;
+        }
+        // Building C: [23.0, 33.0] x [29.0, 39.0]
+        if (pushOutOfBox(x, z, 23.0f, 33.0f, 29.0f, 39.0f, carRadius)) {
+            hitName = "COMMERCIAL BUILDING";
+            collided = true;
+        }
+        // Building D (Sheared Skyscraper): [-26.5, -17.5] x [43.5, 52.5]
+        if (pushOutOfBox(x, z, -26.5f, -17.5f, 43.5f, 52.5f, carRadius)) {
+            hitName = "SKYSCRAPER";
+            collided = true;
+        }
+
+        // 8. Mountain Portal Masonry Walls & Cliff Ridges
+        // Left portal abutment wall: [-54.0, -48.2] x [-23.5, -18.2]
+        if (pushOutOfBox(x, z, -54.0f, -48.2f, -23.5f, -18.2f, carRadius)) {
+            hitName = "TUNNEL PORTAL";
+            collided = true;
+        }
+        // Right portal abutment wall: [-41.8, -32.5] x [-23.5, -18.2]
+        if (pushOutOfBox(x, z, -41.8f, -32.5f, -23.5f, -18.2f, carRadius)) {
+            hitName = "TUNNEL PORTAL";
+            collided = true;
+        }
+        // Rocky Cliff East of Tunnel: [-32.0, -16.0] x [-16.0, 5.0]
+        if (pushOutOfBox(x, z, -32.0f, -16.0f, -16.0f, 5.0f, carRadius)) {
+            hitName = "MOUNTAIN CLIFF";
+            collided = true;
+        }
+        // Rocky Mountain Ridge between tunnel and return highway: [-54.5, -48.2] x [-18.0, 6.0]
+        if (pushOutOfBox(x, z, -54.5f, -48.2f, -18.0f, 6.0f, carRadius)) {
+            hitName = "MOUNTAIN RIDGE";
+            collided = true;
+        }
+
+        // 9. Gas Stations (Mart buildings, pump islands, and totem signs)
+        // Station 1 (City): Mart [39.5, 47.5] x [0.0, 12.0]
+        if (pushOutOfBox(x, z, 39.5f, 47.5f, 0.0f, 12.0f, carRadius)) {
+            hitName = "GAS STATION MART";
+            collided = true;
+        }
+        // Station 1 Pump Islands: [33.8, 36.2] x [1.2, 4.8] and [33.8, 36.2] x [7.2, 10.8]
+        if (pushOutOfBox(x, z, 33.8f, 36.2f, 1.2f, 4.8f, carRadius) ||
+            pushOutOfBox(x, z, 33.8f, 36.2f, 7.2f, 10.8f, carRadius)) {
+            hitName = "GAS PUMP ISLAND";
+            collided = true;
+        }
+        // Station 2 (Countryside): Mart [-1.0, 11.0] x [-98.5, -92.5]
+        if (pushOutOfBox(x, z, -1.0f, 11.0f, -98.5f, -92.5f, carRadius)) {
+            hitName = "GAS STATION MART";
+            collided = true;
+        }
+        // Station 2 Pump Islands: [1.2, 2.8] x [-89.2, -84.8] and [7.2, 8.8] x [-89.2, -84.8]
+        if (pushOutOfBox(x, z, 1.2f, 2.8f, -89.2f, -84.8f, carRadius) ||
+            pushOutOfBox(x, z, 7.2f, 8.8f, -89.2f, -84.8f, carRadius)) {
+            hitName = "GAS PUMP ISLAND";
+            collided = true;
+        }
+        // Station 2 Roadside Price Totem: [-3.5, -1.5] x [-81.2, -78.8]
+        if (pushOutOfBox(x, z, -3.5f, -1.5f, -81.2f, -78.8f, carRadius)) {
+            hitName = "PRICE TOTEM SIGN";
+            collided = true;
+        }
+
+        // 10. Trees (Trunks outside the road)
+        const float treeMinDist = 0.80f + carRadius; // ~1.65m safe clearance
+        for (const auto& tree : trees) {
+            float dx = x - tree.position.x;
+            float dz = z - tree.position.z;
+            float d2 = dx * dx + dz * dz;
+            if (d2 < treeMinDist * treeMinDist && d2 > 0.0001f) {
+                float d = std::sqrt(d2);
+                float push = treeMinDist - d;
+                x += (dx / d) * push;
+                z += (dz / d) * push;
+                hitName = "TREE";
+                collided = true;
+            }
+        }
+
+        // 11. Street Lamps
+        const float lampMinDist = 0.40f + carRadius; // ~1.25m safe clearance
+        for (const auto& lamp : streetLamps) {
+            float dx = x - lamp.position.x;
+            float dz = z - lamp.position.z;
+            float d2 = dx * dx + dz * dz;
+            if (d2 < lampMinDist * lampMinDist && d2 > 0.0001f) {
+                float d = std::sqrt(d2);
+                float push = lampMinDist - d;
+                x += (dx / d) * push;
+                z += (dz / d) * push;
+                hitName = "STREET LAMP";
+                collided = true;
+            }
+        }
+
+        // 12. Milestone Gantries
+        const float pylonMinDist = 0.45f + carRadius;
+        for (const auto& ms : milestones) {
+            m3d::Vec3 right = m3d::cross(ms.forward, m3d::Vec3(0, 1, 0)).normalized();
+            m3d::Vec3 pL = ms.position - right * 4.4f;
+            m3d::Vec3 pR = ms.position + right * 4.4f;
+
+            float dxL = x - pL.x, dzL = z - pL.z;
+            float d2L = dxL * dxL + dzL * dzL;
+            if (d2L < pylonMinDist * pylonMinDist && d2L > 0.0001f) {
+                float d = std::sqrt(d2L);
+                x += (dxL / d) * (pylonMinDist - d);
+                z += (dzL / d) * (pylonMinDist - d);
+                hitName = "CHECKPOINT PYLON";
+                collided = true;
+            }
+
+            float dxR = x - pR.x, dzR = z - pR.z;
+            float d2R = dxR * dxR + dzR * dzR;
+            if (d2R < pylonMinDist * pylonMinDist && d2R > 0.0001f) {
+                float d = std::sqrt(d2R);
+                x += (dxR / d) * (pylonMinDist - d);
+                z += (dzR / d) * (pylonMinDist - d);
+                hitName = "CHECKPOINT PYLON";
+                collided = true;
+            }
+        }
+
+        return collided;
+    }
+
+    // Reset car position, orientation, and game run states
+    void resetCar(const Track& track) {
+        carDistance = 0.0f;
+        carSpeed = 0.0f;
+        wheelSteerAngle = 0.0f;
+        wheelSpinAngle = 0.0f;
+        carYaw = 0.0f;
+        carPitch = 0.0f;
+        isJourneyComplete = false;
+        isBraking = false;
+        isReversing = false;
+
+        // Reset collision state
+        isCollidingWithObstacle = false;
+        activeObstacleName = "";
+        collisionAlertTimer = 0.0f;
+
+        // Reset fuel and milestone state
+        fuel = maxFuel;
+        if (coinsCollected < 3) coinsCollected = 3; // Ensure 3 starting coins
+        currentMilestoneIdx = 0;
+        for (auto& m : milestones) m.isReached = false;
+        for (auto& c : coins) {
+            c.isCollected = false;
+            c.position.y = c.baseHeight;
+            c.respawnTimer = 0.0f;
+            c.collectAnimTimer = 0.0f;
+        }
+        notificationMessage = "";
+        notificationTimer = 0.0f;
+
+        track.sample(0.0f, carPos, carForward, carUp, currentZone, carSpeed);
+        carPos = m3d::Vec3(-48.0f, 0.0f, 30.0f);
+        carForward = m3d::Vec3(1.0f, 0.0f, 0.0f);
+        carUp = m3d::Vec3(0.0f, 1.0f, 0.0f);
+        carRight = m3d::cross(carForward, carUp).normalized();
+        carYaw = 0.0f;
+    }
+
+    void initGameEntities(const Track& track) {
+        // [A] Initialize 2 Roadside Gas Stations
+        gasStations.clear();
+
+        // Station 1: City Gateway Gas Station (on East shoulder of City Road facing road westward)
+        GasStation s1;
+        s1.position = m3d::Vec3(35.0f, 0.0f, 6.0f);
+        s1.rotationY = -m3d::PI * 0.5f; // Rotated to face west toward the city roadway
+        s1.name = "City Gateway Gas Station";
+        s1.pumpBayCenter = m3d::Vec3(31.5f, 0.0f, 6.0f);
+        s1.refuelRadius = 9.0f;
+        gasStations.push_back(s1);
+
+        // Station 2: Countryside Highway Oasis (on North shoulder facing highway southward)
+        GasStation s2;
+        s2.position = m3d::Vec3(5.0f, 0.0f, -87.0f);
+        s2.rotationY = 0.0f; // Facing south toward the countryside highway drivers!
+        s2.name = "Countryside Highway Oasis";
+        s2.pumpBayCenter = m3d::Vec3(5.0f, 0.0f, -83.5f);
+        s2.refuelRadius = 9.0f;
+        gasStations.push_back(s2);
+
+        // [B] Initialize 5 Milestone Checkpoint Gates along the track
+        milestones.clear();
+        struct MSData { int wpIdx; const char* name; };
+        MSData msData[5] = {
+            { 4,  "Milestone 1: City Gateway" },
+            { 8,  "Milestone 2: Grand River Bridge" },
+            { 13, "Milestone 3: Mountain Tunnel Portal" },
+            { 24, "Milestone 4: Countryside Speed Trap" },
+            { 33, "Milestone 5: Garage Lap Finish" }
+        };
+
+        for (int i = 0; i < 5; ++i) {
+            Milestone m;
+            int idx = msData[i].wpIdx;
+            m.index = i + 1;
+            m.name = msData[i].name;
+            m.trackDistance = track.cumulativeDistances[idx];
+
+            // Evaluate continuous position and forward heading at milestone
+            m3d::Vec3 p1 = track.evaluateSpline(static_cast<float>(idx));
+            m3d::Vec3 p2 = track.evaluateSpline(static_cast<float>(idx) + 0.1f);
+            m.position = p1;
+            m.forward = (p2 - p1).normalized();
+            m.isReached = false;
+            milestones.push_back(m);
+        }
+
+        // [C] Initialize 30 Golden Collectible Coins along road spline
+        coins.clear();
+        const int numCoins = 30;
+        for (int i = 0; i < numCoins; ++i) {
+            float dist = ((float)i + 0.5f) / static_cast<float>(numCoins) * track.totalLength;
+            m3d::Vec3 p, fwd, up; EnvironmentZone z; float spd;
+            track.sample(dist, p, fwd, up, z, spd);
+
+            m3d::Vec3 right = m3d::cross(fwd, up).normalized();
+            // Alternate lanes: Left (-1.25m), Center (0.0m), Right (+1.25m)
+            float laneOffset = ((i % 3) == 0 ? 0.0f : ((i % 3) == 1 ? -1.25f : 1.25f));
+
+            Coin c;
+            c.id = i;
+            c.laneOffset = laneOffset;
+            c.baseHeight = p.y + 0.65f;
+            c.position = p + right * laneOffset + up * 0.65f;
+            c.rotationAngle = static_cast<float>((i * 47) % 360);
+            c.isCollected = false;
+            c.respawnTimer = 0.0f;
+            c.collectAnimTimer = 0.0f;
+            coins.push_back(c);
+        }
+    }
+
     void init(const Track& track) {
+        // Initialize textures (loads BMPs or generates procedural textures)
+        textures.init();
+
         // Initialize primitives
         cubeMesh = GeometryGenerator::createCube();
         cylinderMesh = GeometryGenerator::createCylinder(24);
@@ -124,6 +676,8 @@ public:
         buildStreetLamps();
         buildTunnelLights();
         buildBoats();
+        initGameEntities(track);
+        resetCar(track);
     }
 
     void buildRoadMeshes(const Track& track) {
@@ -583,6 +1137,10 @@ public:
             if (tx >= -25.0f && tx <= 32.0f && tz >= 22.0f && tz <= 52.0f) return false;
             // Mountain tunnel corridor exclusion
             if (tx >= -62.0f && tx <= -16.0f && tz >= -25.0f && tz <= 14.0f) return false;
+            // Gas station 1 (City Gateway) lot exclusion
+            if (tx >= 23.0f && tx <= 42.0f && tz >= -3.0f && tz <= 16.0f) return false;
+            // Gas station 2 (Countryside Oasis) lot exclusion
+            if (tx >= -8.0f && tx <= 20.0f && tz >= -89.0f && tz <= -69.0f) return false;
 
             // Strict distance check to entire track spline
             for (float s = 0.0f; s < track.totalLength; s += 1.5f) {
@@ -675,7 +1233,7 @@ public:
         boats.push_back({ {-22.0f, -1.20f, -46.0f}, 1.8f, 0.05f, {0.18f, 0.48f, 0.75f}, 4.5f, BoatType::RIVER_PATROL });
     }
 
-    void update(float dt, const Track& track) {
+    void update(float dt, const Track& track, bool inputForward = false, bool inputBackward = false, bool inputLeft = false, bool inputRight = false) {
         globalTime += dt;
 
         // Auto Day/Night cycle
@@ -688,73 +1246,310 @@ public:
         // Headlights automatic activation (at night OR inside mountain tunnel)
         headlightsActive = isNight || (currentZone == EnvironmentZone::TUNNEL);
 
-        // Update car navigation physics along track
-        m3d::Vec3 nextP, nextFwd, nextUp;
-        EnvironmentZone targetZone;
-        float targetSpeed;
-        track.sample(carDistance, carPos, carForward, carUp, targetZone, targetSpeed);
-        currentZone = targetZone;
+        if (isManualDrive) {
+            // =========================================================
+            // 1. MANUAL USER DRIVING MODE (Keyboard Arrow Keys / WASD)
+            // =========================================================
 
-        if (!isJourneyComplete) {
-            // Smooth acceleration / deceleration toward target zone speed
-            float speedRate = 4.5f; // m/s^2
+            // [A] Responsive Steering Input (Smoothed for stable, comfortable control)
+            float targetSteer = 0.0f;
+            if (inputLeft)  targetSteer -= 19.0f; // degrees left (reduced from 28.0f)
+            if (inputRight) targetSteer += 19.0f; // degrees right
 
-            // If nearing completion of the journey (last 16 meters before finish line at garage):
-            // decelerate smoothly down to zero for final parking stop!
-            float distToEnd = track.totalLength - carDistance;
-            if (distToEnd < 16.0f) {
-                targetSpeed = std::max(0.0f, (distToEnd / 16.0f) * 4.5f);
+            float steerSpeed = (targetSteer == 0.0f) ? 10.0f : 6.5f;
+            wheelSteerAngle += (targetSteer - wheelSteerAngle) * std::min(1.0f, dt * steerSpeed);
+
+            // [B] Throttle, Braking, and Reverse
+            isBraking = false;
+            isReversing = false;
+
+            if (inputForward) {
+                // Forward Acceleration (only if fuel > 0)
+                const float maxForwardSpeed = 26.0f; // ~93.6 km/h
+                const float accelRate = 12.0f;       // m/s^2
+                if (carSpeed < -0.2f) {
+                    // Braking while in reverse
+                    carSpeed = std::min(0.0f, carSpeed + 24.0f * dt);
+                    isBraking = true;
+                } else if (fuel <= 0.0f) {
+                    // Out of fuel: engine cuts out!
+                    if (carSpeed > 0.0f) carSpeed = std::max(0.0f, carSpeed - 4.2f * dt);
+                    if (notificationTimer <= 0.0f) {
+                        triggerNotification("OUT OF FUEL! VISIT GAS STATION [F] OR RESET [R]", 0.6f);
+                    }
+                } else if (carSpeed < maxForwardSpeed) {
+                    carSpeed = std::min(maxForwardSpeed, carSpeed + accelRate * dt);
+                    // Consume fuel based on speed / throttle
+                    float consumption = 1.3f + (carSpeed / maxForwardSpeed) * 1.5f;
+                    fuel = std::max(0.0f, fuel - consumption * dt);
+                }
+            } else if (inputBackward) {
+                // Braking or Reverse
+                if (carSpeed > 0.4f) {
+                    // Active braking while moving forward
+                    const float brakeRate = 22.0f; // m/s^2
+                    carSpeed = std::max(0.0f, carSpeed - brakeRate * dt);
+                    isBraking = true;
+                } else {
+                    // Reverse drive (slow reverse allowed to maneuver even on low fuel)
+                    const float maxReverseSpeed = -7.5f; // ~27 km/h in reverse
+                    const float reverseAccel = 8.0f;     // m/s^2
+                    if (fuel > 0.0f) {
+                        carSpeed = std::max(maxReverseSpeed, carSpeed - reverseAccel * dt);
+                        fuel = std::max(0.0f, fuel - 1.2f * dt);
+                    } else {
+                        // Emergency crawl in reverse if empty
+                        carSpeed = std::max(-2.0f, carSpeed - 2.5f * dt);
+                    }
+                    isReversing = true;
+                }
+            } else {
+                // Coasting / Rolling resistance
+                if (carSpeed > 0.0f) {
+                    carSpeed = std::max(0.0f, carSpeed - 3.8f * dt);
+                } else if (carSpeed < 0.0f) {
+                    carSpeed = std::min(0.0f, carSpeed + 4.8f * dt);
+                }
+                // Idle fuel drain
+                if (fuel > 0.0f) {
+                    fuel = std::max(0.0f, fuel - 0.12f * dt);
+                }
             }
 
-            if (carSpeed < targetSpeed) {
-                carSpeed = std::min(targetSpeed, carSpeed + speedRate * dt);
-            } else if (carSpeed > targetSpeed) {
-                carSpeed = std::max(targetSpeed, carSpeed - speedRate * 1.5f * dt);
+            // [C] Vehicle Kinematics & Ackermann Steering Turn Rate
+            const float wheelbase = 2.30f; // Distance between front and rear axles
+            if (std::abs(carSpeed) > 0.02f) {
+                // Speed-sensitive steering damping for high-speed stability
+                float speedRatio = std::min(1.0f, std::abs(carSpeed) / 26.0f);
+                float effectiveSteerDeg = wheelSteerAngle * (1.0f - 0.40f * speedRatio);
+                float steerRad = effectiveSteerDeg * m3d::DEG2RAD;
+
+                // Turn rate: d(yaw)/dt = (v / L) * tan(steer)
+                float yawRate = (carSpeed / wheelbase) * std::tan(steerRad) * 0.76f;
+                carYaw += yawRate * dt;
+
+                while (carYaw > m3d::PI)  carYaw -= 2.0f * m3d::PI;
+                while (carYaw < -m3d::PI) carYaw += 2.0f * m3d::PI;
             }
 
-            // Distance advance
-            float deltaDist = carSpeed * dt;
-            carDistance += deltaDist;
+            // [D] Planar Horizontal Driving Integration with Physical Obstacle & World Border Collision
+            float cy = std::cos(carYaw);
+            float sy = std::sin(carYaw);
 
-            // When reaching or completing full journey path at Garage:
-            if (carDistance >= track.totalLength) {
-                carDistance = track.totalLength;
+            float deltaMove = carSpeed * dt;
+            float candX = carPos.x + cy * deltaMove;
+            float candZ = carPos.z + sy * deltaMove;
+
+            std::string hitObs;
+            bool hit = resolveCollision(candX, candZ, track, hitObs);
+
+            // Car position is updated to the resolved, depenetrated position
+            carPos.x = candX;
+            carPos.z = candZ;
+
+            if (hit) {
+                isCollidingWithObstacle = true;
+                activeObstacleName = hitObs;
+                collisionAlertTimer = 1.0f;
+
+                // Stop linear speed on impact
                 carSpeed = 0.0f;
-                wheelSteerAngle = 0.0f;
-                isJourneyComplete = true;
+            } else {
+                if (collisionAlertTimer > 0.0f) {
+                    collisionAlertTimer -= dt;
+                    if (collisionAlertTimer <= 0.0f) {
+                        isCollidingWithObstacle = false;
+                    }
+                }
             }
+
+            // [E] Continuous Smooth Surface Height & Suspension Integration
+            // Samples exact C1 Catmull-Rom spline height without discrete jumps or staircases
+            RoadSurfaceInfo rInfo = getRoadInfoAt(carPos.x, carPos.z, track);
+            currentZone = rInfo.zone;
+            carDistance = rInfo.trackDistance;
+            float targetGroundY = rInfo.elevation;
+
+            // Responsive spring-damper suspension (silky smooth vertical transitions without bouncing)
+            float suspensionRate = 20.0f;
+            carPos.y += (targetGroundY - carPos.y) * std::min(1.0f, dt * suspensionRate);
+
+            // [F] Smooth Road Slope Pitch
+            EnvironmentZone dummyZone;
+            float frontTargetY = getRoadHeightAt(carPos.x + cy * 1.4f, carPos.z + sy * 1.4f, track, dummyZone);
+            float rearTargetY  = getRoadHeightAt(carPos.x - cy * 1.4f, carPos.z - sy * 1.4f, track, dummyZone);
+            float targetPitch = std::atan2(frontTargetY - rearTargetY, 2.8f);
+            carPitch += (targetPitch - carPitch) * std::min(1.0f, dt * 10.0f);
+
+            // [G] Update Orthonormal Orientation Basis with Pitch Tilt
+            float cp = std::cos(carPitch);
+            float sp = std::sin(carPitch);
+
+            carForward = m3d::Vec3(cy * cp, sp, sy * cp).normalized();
+            carRight = m3d::cross(carForward, m3d::Vec3(0.0f, 1.0f, 0.0f)).normalized();
+            carUp = m3d::cross(carRight, carForward).normalized();
 
             // Wheel spin rotation proportional to travel distance (radius = 0.38m)
-            float wheelRadius = 0.38f;
-            wheelSpinAngle += (deltaDist / wheelRadius) * m3d::RAD2DEG;
-            if (wheelSpinAngle > 360.0f) wheelSpinAngle -= 360.0f;
-        } else {
-            // Car parked / stopped at Garage
-            carSpeed = 0.0f;
-            wheelSteerAngle = 0.0f;
-        }
+            const float wheelRadius = 0.38f;
+            wheelSpinAngle += (carSpeed * dt / wheelRadius) * m3d::RAD2DEG;
+            if (wheelSpinAngle > 360.0f)  wheelSpinAngle -= 360.0f;
+            if (wheelSpinAngle < -360.0f) wheelSpinAngle += 360.0f;
 
-        // Car orthonormal basis
-        carRight = m3d::cross(carForward, carUp).normalized();
-        carUp = m3d::cross(carRight, carForward).normalized();
-
-        // Calculate curvature for wheel steering angle
-        if (!isJourneyComplete) {
-            m3d::Vec3 futureP, futureFwd, futureUp;
-            EnvironmentZone fz; float fs;
-            track.sample(carDistance + 3.0f, futureP, futureFwd, futureUp, fz, fs);
-            float turnDot = m3d::dot(carRight, futureFwd);
-            wheelSteerAngle = m3d::clamp(turnDot * 35.0f, -30.0f, 30.0f); // degrees
         } else {
-            wheelSteerAngle = 0.0f;
+            // =========================================================
+            // 2. AUTONOMOUS PATH-FOLLOWING MODE
+            // =========================================================
+            m3d::Vec3 nextP, nextFwd, nextUp;
+            EnvironmentZone targetZone;
+            float targetSpeed;
+            track.sample(carDistance, carPos, carForward, carUp, targetZone, targetSpeed);
+            currentZone = targetZone;
+
+            if (!isJourneyComplete) {
+                if (fuel > 0.0f) {
+                    float consumption = 1.1f + (carSpeed / 20.0f) * 1.3f;
+                    fuel = std::max(0.0f, fuel - consumption * dt);
+                } else {
+                    targetSpeed = 0.0f;
+                }
+
+                float speedRate = 4.5f; // m/s^2
+                float distToEnd = track.totalLength - carDistance;
+                if (distToEnd < 16.0f) {
+                    targetSpeed = std::max(0.0f, (distToEnd / 16.0f) * 4.5f);
+                }
+
+                if (carSpeed < targetSpeed) {
+                    carSpeed = std::min(targetSpeed, carSpeed + speedRate * dt);
+                } else if (carSpeed > targetSpeed) {
+                    carSpeed = std::max(targetSpeed, carSpeed - speedRate * 1.5f * dt);
+                }
+
+                float deltaDist = carSpeed * dt;
+                carDistance += deltaDist;
+
+                if (carDistance >= track.totalLength) {
+                    carDistance = track.totalLength;
+                    carSpeed = 0.0f;
+                    wheelSteerAngle = 0.0f;
+                    isJourneyComplete = true;
+                }
+
+                float wheelRadius = 0.38f;
+                wheelSpinAngle += (deltaDist / wheelRadius) * m3d::RAD2DEG;
+                if (wheelSpinAngle > 360.0f) wheelSpinAngle -= 360.0f;
+            } else {
+                carSpeed = 0.0f;
+                wheelSteerAngle = 0.0f;
+            }
+
+            carRight = m3d::cross(carForward, carUp).normalized();
+            carUp = m3d::cross(carRight, carForward).normalized();
+
+            if (!isJourneyComplete) {
+                m3d::Vec3 futureP, futureFwd, futureUp;
+                EnvironmentZone fz; float fs;
+                track.sample(carDistance + 3.0f, futureP, futureFwd, futureUp, fz, fs);
+                float turnDot = m3d::dot(carRight, futureFwd);
+                wheelSteerAngle = m3d::clamp(turnDot * 35.0f, -30.0f, 30.0f);
+            } else {
+                wheelSteerAngle = 0.0f;
+            }
         }
 
         // Update boats movement strictly under the Grand River Bridge
         for (auto& boat : boats) {
             boat.basePosition.x += boat.speed * dt;
-            // Wrap boat bounds in river channel strictly under bridge (between X = -28.0m and +12.0m)
             if (boat.basePosition.x > 12.0f) boat.basePosition.x = -28.0f;
             if (boat.basePosition.x < -28.0f) boat.basePosition.x = 12.0f;
+        }
+
+        // -------------------------------------------------------------
+        // Game Systems: Gas Stations, Coins, Milestones, Notifications
+        // -------------------------------------------------------------
+
+        // [A] Proximity detection to roadside Gas Stations
+        isNearGasStation = false;
+        activeStationIdx = -1;
+        activeStationName = "";
+        for (size_t i = 0; i < gasStations.size(); ++i) {
+            float dx = carPos.x - gasStations[i].pumpBayCenter.x;
+            float dz = carPos.z - gasStations[i].pumpBayCenter.z;
+            float distSq = dx * dx + dz * dz;
+            if (distSq < gasStations[i].refuelRadius * gasStations[i].refuelRadius) {
+                isNearGasStation = true;
+                activeStationIdx = static_cast<int>(i);
+                activeStationName = gasStations[i].name;
+                break;
+            }
+        }
+
+        // [B] Golden Coin Collectibles (Hover Bobbing, 3D Spin, Collection & Respawn)
+        for (auto& coin : coins) {
+            coin.rotationAngle += 160.0f * dt;
+            if (coin.rotationAngle >= 360.0f) coin.rotationAngle -= 360.0f;
+
+            if (coin.isCollected) {
+                if (coin.collectAnimTimer > 0.0f) {
+                    coin.collectAnimTimer -= dt;
+                    coin.position.y += dt * 3.8f; // Floats up with golden pop
+                } else {
+                    coin.respawnTimer -= dt;
+                    if (coin.respawnTimer <= 0.0f) {
+                        coin.isCollected = false;
+                        coin.position.y = coin.baseHeight;
+                    }
+                }
+            } else {
+                coin.position.y = coin.baseHeight + 0.14f * std::sin(globalTime * 3.8f + coin.id);
+
+                float dx = carPos.x - coin.position.x;
+                float dy = (carPos.y + 0.38f) - coin.position.y;
+                float dz = carPos.z - coin.position.z;
+                float distSq = dx * dx + dy * dy + dz * dz;
+
+                if (distSq < 2.3f * 2.3f) {
+                    coin.isCollected = true;
+                    coin.collectAnimTimer = 0.5f;
+                    coin.respawnTimer = 22.0f; // Respawns after 22 seconds
+                    coinsCollected++;
+                    triggerNotification("+1 COIN! [TOTAL: " + std::to_string(coinsCollected) + "]", 1.6f);
+                }
+            }
+        }
+
+        // [C] Milestone Checkpoint Gates
+        if (currentMilestoneIdx < static_cast<int>(milestones.size())) {
+            const auto& ms = milestones[currentMilestoneIdx];
+            float dx = carPos.x - ms.position.x;
+            float dz = carPos.z - ms.position.z;
+            if (dx * dx + dz * dz < 5.8f * 5.8f) {
+                milestones[currentMilestoneIdx].isReached = true;
+                if (currentMilestoneIdx == static_cast<int>(milestones.size()) - 1) {
+                    lapsCompleted++;
+                    coinsCollected += 5; // Lap bonus
+                    fuel = std::min(maxFuel, fuel + 25.0f); // Bonus fuel on lap finish
+                    triggerNotification("* LAP " + std::to_string(lapsCompleted) + " COMPLETE! +5 COINS *", 3.5f);
+                    for (auto& m : milestones) m.isReached = false;
+                    currentMilestoneIdx = 0;
+                } else {
+                    coinsCollected += 2; // Checkpoint bonus
+                    currentMilestoneIdx++;
+                    triggerNotification("* CHECKPOINT " + std::to_string(currentMilestoneIdx) + "/5! +2 COINS *", 2.8f);
+                }
+            }
+        }
+
+        // [D] HUD Notifications & Low Fuel Alert
+        if (notificationTimer > 0.0f) {
+            notificationTimer -= dt;
+            if (notificationTimer <= 0.0f) {
+                notificationMessage = "";
+            }
+        } else {
+            if (fuel > 0.0f && fuel < 20.0f) {
+                triggerNotification("WARNING: LOW FUEL (<20%)! VISIT A GAS STATION", 1.2f);
+            }
         }
     }
 

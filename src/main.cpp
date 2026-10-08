@@ -31,6 +31,12 @@ bool firstMouse = true;
 // Key state tracking for single-press toggles
 bool keyStates[1024] = {false};
 
+// Real-time driving input flags (Arrows / WASD)
+bool driveForward = false;
+bool driveBackward = false;
+bool driveLeft = false;
+bool driveRight = false;
+
 // ==========================================
 // GLSL Shaders
 // ==========================================
@@ -50,12 +56,14 @@ out vec3 VertexColor;
 uniform mat4 model;
 uniform mat4 view;
 uniform mat4 projection;
+uniform vec2 uvScale = vec2(1.0, 1.0);
+uniform vec2 uvOffset = vec2(0.0, 0.0);
 
 void main() {
     FragPos = vec3(model * vec4(aPos, 1.0));
     mat3 normalMatrix = mat3(transpose(inverse(model)));
     Normal = normalize(normalMatrix * aNormal);
-    TexCoords = aTexCoords;
+    TexCoords = aTexCoords * uvScale + uvOffset;
     VertexColor = aColor;
 
     gl_Position = projection * view * vec4(FragPos, 1.0);
@@ -102,6 +110,10 @@ uniform Material material;
 uniform DirLight dirLight;
 uniform vec3 ambientGlobal;
 uniform vec3 viewPos;
+
+uniform sampler2D diffuseTexture;
+uniform bool useTexture = false;
+uniform float textureBlend = 1.0;
 
 #define MAX_POINT_LIGHTS 16
 uniform int numPointLights;
@@ -161,8 +173,12 @@ void main() {
     vec3 norm = normalize(Normal);
     vec3 viewDir = normalize(viewPos - FragPos);
 
-    // Base object diffuse color modulated by vertex color
+    // Base object diffuse color modulated by vertex color and optional texture
     vec3 baseColor = material.diffuseColor * VertexColor;
+    if (useTexture) {
+        vec4 texSample = texture(diffuseTexture, TexCoords);
+        baseColor = mix(baseColor, texSample.rgb * material.diffuseColor, textureBlend);
+    }
 
     // 1. Ambient Lighting
     vec3 result = ambientGlobal * baseColor;
@@ -267,6 +283,19 @@ void processInput(GLFWwindow* window, float dt) {
         glfwSetWindowShouldClose(window, true);
     }
 
+    // Car Manual Driving Inputs (Up/Down/Left/Right arrow keys & W/S/A/D)
+    driveForward = (glfwGetKey(window, GLFW_KEY_UP) == GLFW_PRESS);
+    driveBackward = (glfwGetKey(window, GLFW_KEY_DOWN) == GLFW_PRESS);
+    driveLeft = (glfwGetKey(window, GLFW_KEY_LEFT) == GLFW_PRESS);
+    driveRight = (glfwGetKey(window, GLFW_KEY_RIGHT) == GLFW_PRESS);
+
+    if (camera.mode != CameraMode::ORBIT_FREE) {
+        if (glfwGetKey(window, GLFW_KEY_W) == GLFW_PRESS) driveForward = true;
+        if (glfwGetKey(window, GLFW_KEY_S) == GLFW_PRESS) driveBackward = true;
+        if (glfwGetKey(window, GLFW_KEY_A) == GLFW_PRESS) driveLeft = true;
+        if (glfwGetKey(window, GLFW_KEY_D) == GLFW_PRESS) driveRight = true;
+    }
+
     // Camera Mode Switching
     if (glfwGetKey(window, GLFW_KEY_1) == GLFW_PRESS) camera.setMode(CameraMode::CHASE);
     if (glfwGetKey(window, GLFW_KEY_2) == GLFW_PRESS) camera.setMode(CameraMode::FIRST_PERSON);
@@ -290,6 +319,14 @@ void processInput(GLFWwindow* window, float dt) {
         if (glfwGetKey(window, GLFW_KEY_Q) == GLFW_PRESS) camera.processKeyboard(5, dt);
     }
 
+    // Toggle Manual Driving / Autonomous Drive [M]
+    if (glfwGetKey(window, GLFW_KEY_M) == GLFW_PRESS && !keyStates[GLFW_KEY_M]) {
+        scene.isManualDrive = !scene.isManualDrive;
+        keyStates[GLFW_KEY_M] = true;
+    } else if (glfwGetKey(window, GLFW_KEY_M) == GLFW_RELEASE) {
+        keyStates[GLFW_KEY_M] = false;
+    }
+
     // Toggle Day / Night mode [N]
     if (glfwGetKey(window, GLFW_KEY_N) == GLFW_PRESS && !keyStates[GLFW_KEY_N]) {
         scene.isNight = !scene.isNight;
@@ -306,7 +343,7 @@ void processInput(GLFWwindow* window, float dt) {
         keyStates[GLFW_KEY_T] = false;
     }
 
-    // Pause / Resume car movement [SPACE]
+    // Pause / Resume movement [SPACE]
     if (glfwGetKey(window, GLFW_KEY_SPACE) == GLFW_PRESS && !keyStates[GLFW_KEY_SPACE]) {
         isPaused = !isPaused;
         keyStates[GLFW_KEY_SPACE] = true;
@@ -314,14 +351,12 @@ void processInput(GLFWwindow* window, float dt) {
         keyStates[GLFW_KEY_SPACE] = false;
     }
 
-    // Toggle Tree Shearing animation [S] (when not in free camera)
-    if (camera.mode != CameraMode::ORBIT_FREE) {
-        if (glfwGetKey(window, GLFW_KEY_S) == GLFW_PRESS && !keyStates[GLFW_KEY_S]) {
-            scene.enableTreeShear = !scene.enableTreeShear;
-            keyStates[GLFW_KEY_S] = true;
-        } else if (glfwGetKey(window, GLFW_KEY_S) == GLFW_RELEASE) {
-            keyStates[GLFW_KEY_S] = false;
-        }
+    // Toggle Tree Shearing animation [K]
+    if (glfwGetKey(window, GLFW_KEY_K) == GLFW_PRESS && !keyStates[GLFW_KEY_K]) {
+        scene.enableTreeShear = !scene.enableTreeShear;
+        keyStates[GLFW_KEY_K] = true;
+    } else if (glfwGetKey(window, GLFW_KEY_K) == GLFW_RELEASE) {
+        keyStates[GLFW_KEY_K] = false;
     }
 
     // Toggle Headlights override [H]
@@ -342,12 +377,18 @@ void processInput(GLFWwindow* window, float dt) {
 
     // Reset back to Garage [R]
     if (glfwGetKey(window, GLFW_KEY_R) == GLFW_PRESS && !keyStates[GLFW_KEY_R]) {
-        scene.carDistance = 0.0f;
-        scene.carSpeed = 0.0f;
-        scene.isJourneyComplete = false;
+        scene.resetCar(track);
         keyStates[GLFW_KEY_R] = true;
     } else if (glfwGetKey(window, GLFW_KEY_R) == GLFW_RELEASE) {
         keyStates[GLFW_KEY_R] = false;
+    }
+
+    // Refuel at Gas Station [F] (1 coin = +30% fuel)
+    if (glfwGetKey(window, GLFW_KEY_F) == GLFW_PRESS && !keyStates[GLFW_KEY_F]) {
+        scene.refuel();
+        keyStates[GLFW_KEY_F] = true;
+    } else if (glfwGetKey(window, GLFW_KEY_F) == GLFW_RELEASE) {
+        keyStates[GLFW_KEY_F] = false;
     }
 
     // Capture Screenshot [P]
@@ -410,12 +451,16 @@ int main(int argc, char** argv) {
     std::cout << "  OpenGL Version: " << GLAD_VERSION_MAJOR(version) << "." << GLAD_VERSION_MINOR(version) << "\n";
     std::cout << "  GPU / Renderer: " << glGetString(GL_RENDERER) << "\n";
     std::cout << "===================================================\n";
-    std::cout << "  Controls:\n";
-    std::cout << "  [1] Chase Camera      [2] Cockpit View     [3] Birds-Eye Cam\n";
-    std::cout << "  [4] Free Fly Cam      [5] Scenic Cam       [C] Cycle Scenic Spot\n";
+    std::cout << "  Manual Driving Controls (Arrow Keys / WASD):\n";
+    std::cout << "  [UP / W] Accelerate Forward     [DOWN / S] Brake / Reverse\n";
+    std::cout << "  [LEFT / A] Steer Left           [RIGHT / D] Steer Right\n";
+    std::cout << "  [M] Toggle Manual / Auto Drive  [R] Reset Car to Garage Start\n";
+    std::cout << "  Camera Controls:\n";
+    std::cout << "  [1] Chase Cam (Follow Car)      [2] Cockpit Driver View\n";
+    std::cout << "  [3] Birds-Eye Cam               [4] Free Orbit Cam   [5] Scenic Cam\n";
+    std::cout << "  Environment Controls:\n";
     std::cout << "  [N] Day/Night Mode    [T] Auto Day/Night   [SPACE] Pause/Resume\n";
-    std::cout << "  [S] Toggle Tree Wind Shearing              [H] Toggle Headlights\n";
-    std::cout << "  [R] Reset to Garage   [Right Click] Toggle Mouse in Free Cam\n";
+    std::cout << "  [K] Toggle Wind Shear [H] Toggle Headlights [P] Screenshot\n";
     std::cout << "===================================================\n";
 
     // OpenGL Global Configuration
@@ -428,6 +473,13 @@ int main(int argc, char** argv) {
     // 4. Initialize Shaders
     Shader sceneShader(sceneVertexShaderSource, sceneFragmentShaderSource);
     Shader hudShader(hudVertexShaderSource, hudFragmentShaderSource);
+
+    sceneShader.use();
+    sceneShader.setInt("diffuseTexture", 0);
+    sceneShader.setBool("useTexture", false);
+    sceneShader.setFloat("textureBlend", 1.0f);
+    sceneShader.setVec2("uvScale", m3d::Vec2(1.0f, 1.0f));
+    sceneShader.setVec2("uvOffset", m3d::Vec2(0.0f, 0.0f));
 
     // 5. Initialize Track, Scene, and HUD
     scene.init(track);
@@ -449,51 +501,98 @@ int main(int argc, char** argv) {
         // Automated demonstration frame setup if requested via --capture-demos
         static int demoFrame = 0;
         if (captureDemos) {
+            scene.isManualDrive = false;
             demoFrame++;
-            if (demoFrame <= 10) {
-                // View 1: Start Point at building named GARAGE (Verifying building, 3D GARAGE sign, start gantry)
+            float spd = 0.0f;
+            if (demoFrame <= 15) {
+                // View 1: Golden coins along road near city start
                 camera.setMode(CameraMode::CHASE);
-                scene.carDistance = 0.5f;
-            } else if (demoFrame <= 20) {
-                // View 2: Bridge road deck under arch (Verifying arches, river, boats)
-                camera.setMode(CameraMode::CHASE);
-                scene.carDistance = track.cumulativeDistances[10] + 6.0f;
-            } else if (demoFrame <= 30) {
-                // View 3: Inside mountain tunnel (Verifying curved vault, dual LED strips, overhead signals)
-                camera.setMode(CameraMode::CHASE);
-                scene.carDistance = track.cumulativeDistances[15] + 8.5f;
-            } else if (demoFrame <= 40) {
-                // View 4: Emergence into countryside (Verifying open highway, wind-sheared trees)
-                camera.setMode(CameraMode::CHASE);
-                scene.carDistance = track.cumulativeDistances[18] + 6.0f;
-            } else if (demoFrame <= 50) {
-                // View 5: Western return road (Verifying clean open road, no tree on road, no cliff block)
-                camera.setMode(CameraMode::CHASE);
-                scene.carDistance = track.cumulativeDistances[28] + 6.0f;
-            } else if (demoFrame <= 60) {
-                // View 6: Return road smooth curve approaching Garage (Verifying ZERO zigzag, ZERO z-fighting)
-                camera.setMode(CameraMode::CHASE);
-                scene.carDistance = track.cumulativeDistances[31] + 2.0f;
-            } else if (demoFrame <= 70) {
-                // View 7: Journey Completed - Car parked at Garage finish line (Verifying final stop & HUD banner)
-                camera.setMode(CameraMode::CHASE);
-                scene.carDistance = track.totalLength;
-                scene.isJourneyComplete = true;
-                scene.carSpeed = 0.0f;
-            } else if (demoFrame <= 80) {
-                // View 8: Bridge and River panoramic view
-                camera.setMode(CameraMode::SCENIC_SIDE);
-                camera.currentScenicSpot = 2;
-                scene.carDistance = track.cumulativeDistances[10];
-            }
-
-            // Immediately sample car position along track and snap chase camera!
-            EnvironmentZone z; float spd;
-            track.sample(scene.carDistance, scene.carPos, scene.carForward, scene.carUp, z, spd);
-            scene.currentZone = z;
-            scene.carRight = m3d::cross(scene.carForward, scene.carUp).normalized();
-            if (camera.mode == CameraMode::CHASE) {
+                scene.carDistance = 14.0f;
+                scene.coinsCollected = 3;
+                scene.fuel = 88.0f;
+                scene.currentMilestoneIdx = 0;
+                track.sample(scene.carDistance, scene.carPos, scene.carForward, scene.carUp, scene.currentZone, spd);
+                scene.carRight = m3d::cross(scene.carForward, scene.carUp).normalized();
                 camera.snapToCar(scene.carPos, scene.carForward, scene.carUp);
+            } else if (demoFrame <= 30) {
+                // View 2: City Gateway Gas Station (Station 1) with car pulling into refuel bay
+                camera.setMode(CameraMode::CHASE);
+                scene.carPos = m3d::Vec3(25.5f, 0.0f, 7.5f);
+                scene.carForward = m3d::Vec3(0.85f, 0.0f, -0.52f).normalized();
+                scene.carRight = m3d::cross(scene.carForward, m3d::Vec3(0.0f, 1.0f, 0.0f)).normalized();
+                scene.carUp = m3d::Vec3(0.0f, 1.0f, 0.0f);
+                scene.isNearGasStation = true;
+                scene.activeStationName = "City Gateway Gas Station";
+                scene.coinsCollected = 4;
+                scene.fuel = 62.0f;
+                scene.triggerNotification("AT GAS STATION! PRESS [F] TO REFUEL (+30% / 1 COIN)", 4.0f);
+                camera.snapToCar(scene.carPos, scene.carForward, scene.carUp);
+            } else if (demoFrame <= 45) {
+                // View 3: Approaching Milestone Gate 2 (Grand River Bridge) with crimson & white fluttering flags
+                camera.setMode(CameraMode::CHASE);
+                scene.carDistance = track.cumulativeDistances[9] - 12.0f;
+                scene.currentMilestoneIdx = 1;
+                scene.coinsCollected = 6;
+                scene.fuel = 75.0f;
+                scene.triggerNotification("* CHECKPOINT 2/5: GRAND RIVER BRIDGE! +2 COINS *", 4.0f);
+                track.sample(scene.carDistance, scene.carPos, scene.carForward, scene.carUp, scene.currentZone, spd);
+                scene.carRight = m3d::cross(scene.carForward, scene.carUp).normalized();
+                camera.snapToCar(scene.carPos, scene.carForward, scene.carUp);
+            } else if (demoFrame <= 60) {
+                // View 4: Countryside Highway Oasis (Gas Station 2) with roadside price totem and pumps
+                camera.setMode(CameraMode::CHASE);
+                scene.carPos = m3d::Vec3(3.0f, 0.0f, -73.0f);
+                scene.carForward = m3d::Vec3(0.20f, 0.0f, -0.98f).normalized();
+                scene.carRight = m3d::cross(scene.carForward, m3d::Vec3(0.0f, 1.0f, 0.0f)).normalized();
+                scene.carUp = m3d::Vec3(0.0f, 1.0f, 0.0f);
+                scene.isNearGasStation = true;
+                scene.activeStationName = "Countryside Highway Oasis";
+                scene.coinsCollected = 9;
+                scene.fuel = 45.0f;
+                scene.triggerNotification("AT COUNTRYSIDE OASIS! PRESS [F] TO REFUEL", 4.0f);
+                camera.snapToCar(scene.carPos, scene.carForward, scene.carUp);
+            } else if (demoFrame <= 75) {
+                // View 5: High-speed driving approaching Milestone 4 (Countryside Speed Trap) with emerald waving flags
+                camera.setMode(CameraMode::CHASE);
+                scene.carDistance = track.cumulativeDistances[24] - 14.0f;
+                scene.carSpeed = 22.0f; // 79.2 km/h
+                scene.coinsCollected = 11;
+                scene.fuel = 92.0f;
+                scene.currentMilestoneIdx = 3;
+                scene.triggerNotification("* CHECKPOINT 4/5: COUNTRYSIDE SPEED TRAP! *", 4.0f);
+                track.sample(scene.carDistance, scene.carPos, scene.carForward, scene.carUp, scene.currentZone, spd);
+                scene.carRight = m3d::cross(scene.carForward, scene.carUp).normalized();
+                camera.snapToCar(scene.carPos, scene.carForward, scene.carUp);
+            } else if (demoFrame <= 90) {
+                // View 6: Approaching Milestone 5 Finish Arch with Center Crossed Checkered Racing Flags (🏁 X 🏁)
+                camera.setMode(CameraMode::CHASE);
+                scene.carDistance = track.cumulativeDistances[33] - 14.0f;
+                scene.carSpeed = 15.0f;
+                scene.coinsCollected = 16;
+                scene.fuel = 84.0f;
+                scene.currentMilestoneIdx = 4;
+                scene.triggerNotification("* CHECKPOINT 5/5: GRAND PRIX LAP FINISH! *", 4.0f);
+                track.sample(scene.carDistance, scene.carPos, scene.carForward, scene.carUp, scene.currentZone, spd);
+                scene.carRight = m3d::cross(scene.carForward, scene.carUp).normalized();
+                camera.snapToCar(scene.carPos, scene.carForward, scene.carUp);
+            } else if (demoFrame <= 105) {
+                // View 7: River water caustics and bridge stone quays (Scenic Spot 3)
+                camera.setMode(CameraMode::SCENIC_SIDE);
+                camera.currentScenicSpot = 2; // Grand River Bridge Overlook
+                scene.carDistance = track.cumulativeDistances[10];
+                track.sample(scene.carDistance, scene.carPos, scene.carForward, scene.carUp, scene.currentZone, spd);
+            } else if (demoFrame <= 120) {
+                // View 8: Curved tunnel stone masonry vault (Scenic Spot 2)
+                camera.setMode(CameraMode::SCENIC_SIDE);
+                camera.currentScenicSpot = 1; // Inside Tunnel Vault
+                scene.carDistance = track.cumulativeDistances[14];
+                track.sample(scene.carDistance, scene.carPos, scene.carForward, scene.carUp, scene.currentZone, spd);
+            } else if (demoFrame <= 135) {
+                // View 9: City skyline and skyscraper window grid textures (Scenic Spot 5)
+                camera.setMode(CameraMode::SCENIC_SIDE);
+                camera.currentScenicSpot = 4; // City Skyline
+                scene.carDistance = 20.0f;
+                track.sample(scene.carDistance, scene.carPos, scene.carForward, scene.carUp, scene.currentZone, spd);
             }
         }
 
@@ -502,7 +601,7 @@ int main(int argc, char** argv) {
 
         // Update Car Physics and Environment
         if (!isPaused) {
-            scene.update(dt, track);
+            scene.update(dt, track, driveForward, driveBackward, driveLeft, driveRight);
         }
 
         // Update Camera
@@ -541,9 +640,17 @@ int main(int argc, char** argv) {
         // 2. Asphalt Road Ribbon & Dashed Markings
         {
             glDisable(GL_CULL_FACE);
-            ModelRenderer::setMaterial(sceneShader, m3d::Vec3(0.20f, 0.20f, 0.22f), 0.2f, 16.0f);
+            sceneShader.setBool("useTexture", true);
+            sceneShader.setFloat("textureBlend", 0.85f);
+            sceneShader.setVec2("uvScale", m3d::Vec2(1.0f, 75.0f));
+            sceneShader.setVec2("uvOffset", m3d::Vec2(0.0f, 0.0f));
+            scene.textures.bind("asphalt", 0);
+            ModelRenderer::setMaterial(sceneShader, m3d::Vec3(0.35f, 0.35f, 0.38f), 0.2f, 16.0f);
             sceneShader.setMat4("model", m3d::Mat4::identity());
             scene.roadMesh.draw();
+            scene.textures.unbind(0);
+            sceneShader.setBool("useTexture", false);
+            sceneShader.setVec2("uvScale", m3d::Vec2(1.0f, 1.0f));
 
             // Bright road markings (yellow and white generated in mesh)
             ModelRenderer::setMaterial(sceneShader, m3d::Vec3(1.0f, 1.0f, 1.0f), 0.4f, 32.0f);
@@ -572,7 +679,16 @@ int main(int argc, char** argv) {
         // 9. Street Lamps (Illuminated at Night)
         ModelRenderer::renderStreetLamps(sceneShader, scene);
 
-        // 10. Autonomous Car (Main 3D Object with Spinning & Steering Wheels)
+        // 10. Roadside Fuel Stations (Canopies, Dual Pumps, Convenience Stores, Price Totems)
+        ModelRenderer::renderGasStations(sceneShader, scene);
+
+        // 11. Milestone Checkpoint Gates (Overhead Gantries with LED chevrons)
+        ModelRenderer::renderMilestoneGates(sceneShader, scene);
+
+        // 12. Golden Coin Collectibles (Arcade 3D Spin, Hover Bob, Pop-Flash on Collect)
+        ModelRenderer::renderCoins(sceneShader, scene);
+
+        // 13. Autonomous Car (Main 3D Object with Spinning & Steering Wheels)
         ModelRenderer::renderCar(sceneShader, scene);
 
         // -------------------------------------------------------------
@@ -587,7 +703,10 @@ int main(int argc, char** argv) {
                    scene.carSpeed, dummyTargetSpeed, scene.currentZone,
                    scene.isNight, static_cast<int>(camera.mode),
                    scene.enableTreeShear, scene.headlightsActive,
-                   scene.isJourneyComplete);
+                   scene.isJourneyComplete, scene.isManualDrive, scene.isReversing,
+                   scene.fuel, scene.coinsCollected, scene.currentMilestoneIdx, scene.totalMilestones,
+                   scene.isNearGasStation, scene.notificationTimer, scene.globalTime,
+                   scene.notificationMessage, scene.isCollidingWithObstacle, scene.activeObstacleName);
 
         // -------------------------------------------------------------
         // Update Window Title with Live Telemetry
@@ -598,11 +717,25 @@ int main(int argc, char** argv) {
 
             std::stringstream ss;
             ss << std::fixed << std::setprecision(1);
-            if (scene.isJourneyComplete) {
-                ss << "[JOURNEY COMPLETED - PARKED AT GARAGE] Press [R] to Restart | ";
+            if (scene.isManualDrive) {
+                ss << "[GAME] Coins: " << scene.coinsCollected << " | "
+                   << "Fuel: " << static_cast<int>(scene.fuel) << "% | "
+                   << "Gate: " << (scene.currentMilestoneIdx + 1) << "/" << scene.totalMilestones << " | "
+                   << "Speed: " << (std::abs(scene.carSpeed) * 3.6f) << " km/h | ";
+                if (scene.isNearGasStation) {
+                    ss << "AT " << scene.activeStationName << " -> PRESS [F] TO REFUEL (+30%/COIN) | ";
+                } else if (scene.fuel <= 0.0f) {
+                    ss << "[OUT OF FUEL] COASTING - PRESS [R] TO TOW/RESET | ";
+                } else if (scene.fuel < 20.0f) {
+                    ss << "[LOW FUEL] VISIT GAS STATION TO REFUEL | ";
+                }
+            } else if (scene.isJourneyComplete) {
+                ss << "[AUTONOMOUS COMPLETE - AT GARAGE] Press [R] to Restart | ";
             } else {
-                ss << "[AUTONOMOUS JOURNEY] Zone: " << getZoneName(scene.currentZone)
-                   << " | Speed: " << (scene.carSpeed * 3.6f) << " km/h (Limit: " << (dummyTargetSpeed * 3.6f) << " km/h) | ";
+                ss << "[AUTONOMOUS] Coins: " << scene.coinsCollected << " | "
+                   << "Fuel: " << static_cast<int>(scene.fuel) << "% | "
+                   << "Zone: " << getZoneName(scene.currentZone)
+                   << " | Speed: " << (scene.carSpeed * 3.6f) << " km/h | ";
             }
 
             ss << "Mode: " << (scene.isNight ? "NIGHT" : "DAY")
@@ -629,22 +762,24 @@ int main(int argc, char** argv) {
 
         // Automated demonstration frame capture if requested via --capture-demos
         if (captureDemos) {
-            if (demoFrame == 10) {
-                ScreenshotUtil::saveBMP("demo_garage_start_point.bmp", windowWidth, windowHeight);
-            } else if (demoFrame == 20) {
-                ScreenshotUtil::saveBMP("demo_bridge_deck.bmp", windowWidth, windowHeight);
+            if (demoFrame == 15) {
+                ScreenshotUtil::saveBMP("game_coins_on_road.bmp", windowWidth, windowHeight);
             } else if (demoFrame == 30) {
-                ScreenshotUtil::saveBMP("demo_tunnel_inside.bmp", windowWidth, windowHeight);
-            } else if (demoFrame == 40) {
-                ScreenshotUtil::saveBMP("demo_road_countryside_nohouse.bmp", windowWidth, windowHeight);
-            } else if (demoFrame == 50) {
-                ScreenshotUtil::saveBMP("demo_return_road_mountain_portal_clean.bmp", windowWidth, windowHeight);
+                ScreenshotUtil::saveBMP("game_gas_station_1_city.bmp", windowWidth, windowHeight);
+            } else if (demoFrame == 45) {
+                ScreenshotUtil::saveBMP("game_milestone_bridge_gate.bmp", windowWidth, windowHeight);
             } else if (demoFrame == 60) {
-                ScreenshotUtil::saveBMP("demo_return_road_smooth_curve.bmp", windowWidth, windowHeight);
-            } else if (demoFrame == 70) {
-                ScreenshotUtil::saveBMP("demo_journey_completed_stop.bmp", windowWidth, windowHeight);
-            } else if (demoFrame == 80) {
-                ScreenshotUtil::saveBMP("demo_bridge_boats_scenic.bmp", windowWidth, windowHeight);
+                ScreenshotUtil::saveBMP("game_gas_station_2_countryside.bmp", windowWidth, windowHeight);
+            } else if (demoFrame == 75) {
+                ScreenshotUtil::saveBMP("game_milestone_countryside_flags.bmp", windowWidth, windowHeight);
+            } else if (demoFrame == 90) {
+                ScreenshotUtil::saveBMP("game_milestone_finish_crossed_flags.bmp", windowWidth, windowHeight);
+            } else if (demoFrame == 105) {
+                ScreenshotUtil::saveBMP("texture_bridge_river_water.bmp", windowWidth, windowHeight);
+            } else if (demoFrame == 120) {
+                ScreenshotUtil::saveBMP("texture_tunnel_stone_masonry.bmp", windowWidth, windowHeight);
+            } else if (demoFrame == 135) {
+                ScreenshotUtil::saveBMP("texture_city_skyscrapers.bmp", windowWidth, windowHeight);
                 glfwSetWindowShouldClose(window, true);
             }
         }

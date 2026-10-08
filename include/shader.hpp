@@ -92,6 +92,20 @@ public:
         }
     }
 
+    void setVec2(const std::string& name, const m3d::Vec2& v) const {
+        GLint loc = getUniformLocation(name);
+        if (loc != -1) {
+            glUniform2f(loc, v.x, v.y);
+        }
+    }
+
+    void setVec2(const std::string& name, float x, float y) const {
+        GLint loc = getUniformLocation(name);
+        if (loc != -1) {
+            glUniform2f(loc, x, y);
+        }
+    }
+
     void setVec3(const std::string& name, const m3d::Vec3& v) const {
         GLint loc = getUniformLocation(name);
         if (loc != -1) {

@@ -183,6 +183,21 @@ public:
         return static_cast<float>(i) + frac;
     }
 
+    // Convert spline parameter t to continuous travel distance (meters) along loop
+    float tToDistance(float t) const {
+        int n = static_cast<int>(waypoints.size());
+        if (n == 0) return 0.0f;
+        while (t < 0.0f) t += static_cast<float>(n);
+        while (t >= static_cast<float>(n)) t -= static_cast<float>(n);
+
+        int i = static_cast<int>(t);
+        float frac = t - static_cast<float>(i);
+        int nextIdx = (i + 1) % n;
+        float d0 = cumulativeDistances[i];
+        float d1 = (nextIdx == 0) ? totalLength : cumulativeDistances[nextIdx];
+        return d0 + (d1 - d0) * frac;
+    }
+
     // Sample position, forward tangent, up vector, environment zone, and target speed
     void sample(float distance, m3d::Vec3& outPos, m3d::Vec3& outForward, m3d::Vec3& outUp,
                 EnvironmentZone& outZone, float& outTargetSpeed) const {
