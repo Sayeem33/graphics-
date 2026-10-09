@@ -474,6 +474,31 @@ public:
         }
         return data;
     }
+
+    // [G] Carbon Fiber / Composite Weave: 2x2 diagonal twill weave pattern with subtle anisotropic sheen
+    static std::vector<unsigned char> generateCarbonFiber(int w = 512, int h = 512) {
+        std::vector<unsigned char> data(w * h * 3);
+        int twillSize = 16;
+        for (int y = 0; y < h; ++y) {
+            for (int x = 0; x < w; ++x) {
+                // 2x2 twill diagonal pattern
+                int cellX = (x / (twillSize / 4)) % 4;
+                int cellY = (y / (twillSize / 4)) % 4;
+                bool isHorizontal = ((cellX + cellY) % 4 < 2);
+
+                float microNoise = hash21((float)x, (float)y) * 12.0f;
+                float threadPattern = isHorizontal ? std::sin((float)y * 0.8f) : std::sin((float)x * 0.8f);
+                float lum = 28.0f + (isHorizontal ? 18.0f : 0.0f) + threadPattern * 10.0f + microNoise;
+                lum = std::max(12.0f, std::min(75.0f, lum));
+
+                int idx = (y * w + x) * 3;
+                data[idx + 0] = static_cast<unsigned char>(lum * 0.95f);
+                data[idx + 1] = static_cast<unsigned char>(lum * 0.98f);
+                data[idx + 2] = static_cast<unsigned char>(lum * 1.05f); // Subtle carbon blue tint
+            }
+        }
+        return data;
+    }
 };
 
 // =================================================================
@@ -496,12 +521,13 @@ public:
         };
 
         TexDef defs[] = {
-            { "asphalt",  "assets/textures/asphalt.bmp",  TextureGenerator::generateAsphalt,        256, 256 },
-            { "grass",    "assets/textures/grass.bmp",    TextureGenerator::generateGrass,          256, 256 },
-            { "water",    "assets/textures/water.bmp",    TextureGenerator::generateRiverWater,     256, 256 },
-            { "stone",    "assets/textures/stone.bmp",    TextureGenerator::generateStoneMasonry,   256, 256 },
-            { "building", "assets/textures/building.bmp", TextureGenerator::generateBuildingFacade, 256, 256 },
-            { "concrete", "assets/textures/concrete.bmp", TextureGenerator::generateConcrete,       256, 256 }
+            { "asphalt",  "assets/textures/asphalt.bmp",  TextureGenerator::generateAsphalt,        512, 512 },
+            { "grass",    "assets/textures/grass.bmp",    TextureGenerator::generateGrass,          512, 512 },
+            { "water",    "assets/textures/water.bmp",    TextureGenerator::generateRiverWater,     512, 512 },
+            { "stone",    "assets/textures/stone.bmp",    TextureGenerator::generateStoneMasonry,   512, 512 },
+            { "building", "assets/textures/building.bmp", TextureGenerator::generateBuildingFacade, 512, 512 },
+            { "concrete", "assets/textures/concrete.bmp", TextureGenerator::generateConcrete,       512, 512 },
+            { "carbon",   "assets/textures/carbon.bmp",   TextureGenerator::generateCarbonFiber,    512, 512 }
         };
 
         for (const auto& def : defs) {

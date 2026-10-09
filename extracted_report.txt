@@ -1,0 +1,1101 @@
+TOTAL PAGES: 20
+TOC:
+  level 1: Introduction and Project Scope (page 2)
+  level 2: Introduction (page 2)
+  level 2: Objectives and Achieved Scope (page 2)
+  level 2: Software Architecture (page 2)
+  level 1: Orbital Model and Transformations (page 3)
+  level 2: Keplerian Motion (page 3)
+  level 2: Three-Dimensional Orbit Orientation (page 4)
+  level 2: Model and Hierarchical Transformations (page 4)
+  level 2: Camera and Projection (page 5)
+  level 1: Geometry and Solar-System Objects (page 6)
+  level 2: Shared Vertex Representation (page 6)
+  level 2: RingMesh: Saturn's Annular Geometry (page 6)
+  level 2: OrbitPath: Sampled Curves, Not Physical Objects (page 7)
+  level 2: StarField: Point Geometry and a Camera-Centered Background (page 7)
+  level 2: GPU Buffer Organization and Reuse (page 8)
+  level 2: Individual Object Parameters and Portraits (page 9)
+  level 1: Illumination, Shading, and Textures (page 12)
+  level 2: Selectable Raster Light Sources (page 12)
+  level 2: Gouraud, Phong, and Enhanced Modes (page 13)
+  level 2: Texture and Specialized Passes (page 14)
+  level 3: Texture Loading, UV Sampling and Procedural Fallback (page 14)
+  level 3: Earth Night Map and Cloud Shell (page 15)
+  level 3: Atmosphere and Sun Halo (page 15)
+  level 3: Ring Bands, Transparency and Saturn's Shadow (page 16)
+  level 1: Rasterization, Ray Tracing, and Interaction (page 16)
+  level 2: Rasterization Pipeline (page 16)
+  level 2: Analytical Ray Tracing (page 17)
+  level 3: Full-Screen Ray Reconstruction (page 17)
+  level 3: Analytical Ring Intersection (page 17)
+  level 3: Direct Light, Hard Shadows and One Reflection (page 17)
+  level 2: Selection and Interaction (page 18)
+  level 1: Implementation, Results, and Verification (page 19)
+  level 2: Implementation Environment (page 19)
+  level 2: Automated and Visual Verification (page 19)
+  level 2: Limitations and Future Work (page 20)
+  level 1: Conclusion (page 20)
+
+==================================================
+
+=== PAGE 1 ===
+CSE 4102: Computer Graphics and Image Processing Laboratory
+INTERACTIVE SOLAR SYSTEM
+By
+Md. Eftakar Jaman Arfan
+Roll: 2107030
+Department of Computer Science and Engineering
+Khulna University of Engineering & Technology
+Khulna 9203, Bangladesh
+October, 2026
+
+
+=== PAGE 2 ===
+1
+CHAPTER I
+Introduction and Project Scope
+1.1 Introduction
+This project implements an interactive three-dimensional Solar System in C++20 and OpenGL 3.3 Core.
+It contains the Sun, all eight planets, the Moon, and the four Galilean moons included in the scene.
+The application combines real-time rasterization, texture mapping, selectable point, directional, and
+spot illumination, several shading modes, Keplerian orbital motion, interactive navigation, geometry
+inspection, and an optional analytical ray tracer. The goal is not a literal scale model; it is a technically
+correct and visually readable graphics demonstration in which the essential equations and transformations
+remain visible in the source code.
+Figure 1.1: Closer raster overview of the inner system, at camera distance 46 and elevation 55◦. The Sun and inner
+planets are readable here; the outer planets remain in the scene but are outside this close framing.
+1.2 Objectives and Achieved Scope
+The objectives are reusable indexed geometry, axial/orbital animation, model–view–projection and normal
+transforms, three raster shading and light types, texture and shell passes, interactive navigation and vertex
+inspection, and analytical ray visibility with shadows and one reflection. Each is explained below using
+the actual source equations and screenshots.
+1.3 Software Architecture
+The CPU owns scene records, orbital time, camera state, object selection, texture loading, and draw
+submission. OpenGL vertex shaders transform mesh vertices; fragment shaders evaluate surface color
+and raster lighting. The optional ray-tracing mode instead uploads analytical sphere and ring records
+and reconstructs one camera ray per pixel. GLFW creates the window and input callbacks, GLAD loads
+OpenGL entry points, GLM supplies vector and matrix mathematics, stb loads and writes images, and
+Dear ImGui implements the control and inspector panels.
+Figure 1.2 separates CPU scene work from the two GPU visibility methods. Both branches share the same
+simulation and camera. The ray branch does not receive the raster textures, orbit-line buffers, star-point
+buffer, or atmosphere shells.
+
+
+=== PAGE 3 ===
+2
+The ordinary vertex route can be summarized by
+pclip = PVM
+plocal
+1
+
+,
+pndc = pclip.xyz
+pclip.w
+,
+(1.1)
+where M, V, and P are the model, view, and perspective-projection matrices.
+Startup
+GLFW context; GLAD
+Compile shaders
+Upload meshes/textures
+Frame input
+Mouse, keyboard, UI
+Camera/time/light
+controls
+Visibility and selection
+CPU scene update
+Kepler orbits and moons
+M, normals, V, P
+Analytical
+sphere/ring data
+Raster branch – GPU
+Stars →paths →bodies/moons
+→clouds →rings →halos
+→optional geometry overlays
+Vertex transforms; fragment shading
+Depth testing and blending
+Ray branch – GPU
+Full-screen triangle; inverse PV
+Primary ray →nearest sphere/ring
+→Phong light and hard shadow
+→optional one reflection
+Procedural sky; no
+surface maps/paths
+Common presentation – main.cpp
+Labels and UI →framebuffer →optional PNG
+Buffer swap and event polling; repeat next frame
+Figure 1.2: Whole-application workflow. Initialization occurs once; input, scene update, the selected rendering
+branch, and presentation repeat each frame.
+CHAPTER II
+Orbital Model and Transformations
+2.1 Keplerian Motion
+Each planet stores a real semi-major axis aAU, eccentricity e, inclination i, ascending node Ω, ar-
+gument of periapsis ω, initial phase M0, and real sidereal period Td in days.
+In realistic mode,
+visualOrbitRadius() and effectiveOrbitPeriodSeconds() use
+av = 14a0.60
+AU ,
+Tv = 22
+Td
+365.256.
+(2.1)
+Thus one Earth orbit takes 22 simulation seconds, not 22 real astronomical seconds. The same time-warp
+multiplier applies to every planet, preserving their period ratios. Radius R is a separate hand-chosen
+visual body size and is not calculated from AU. The simulation advances t by ∆t s when not paused;
+main.cpp clamps each wall-clock frame step to 0 ≤∆t ≤0.05 s. Consequently a very slow frame does
+not advance the entire missed wall-clock interval.
+The mean anomaly passed to the realistic solver is
+M(t) = M0 +nt,
+n = 2π
+Tv
+.
+(2.2)
+solveEccentricAnomaly() wraps M into [0,2π) and finds the eccentric anomaly E using six Newton
+iterations. It starts from E0 = M for e < 0.8, otherwise E0 = π. The implemented update, including its
+denominator guard, is
+E −esinE = M,
+Ek+1 = Ek −
+Ek −esinEk −M
+max(1−ecosEk,0.001).
+(2.3)
+
+
+=== PAGE 4 ===
+3
+keplerOrbitPosition() directly constructs a point from E:
+porbit(E) =
+
+
+av(cosE −e)
+0
+av
+p
+max(0,1−e2)sinE
+
+.
+(2.4)
+The realistic branch does not calculate true anomaly ν or first build a polar (rcosν,rsinν) point.
+Equation (2.4) is the actual code parameterization. The Sun is at the focus (0,0,0), not the geometric
+ellipse center (−ave,0,0).
+Ignoring the negligible numerical solve error, ˙E = n/(1−ecosE) and the swept-area rate in the local XZ
+plane is
+1
+2|x˙z−z˙x| = 1
+2a2
+v
+p
+1−e2 n.
+(2.5)
+This constant area rate explains the perihelion speed-up. The perihelion/aphelion speed ratio is (1 +
+e)/(1 −e), approximately 1.518 for Mercury. The displayed speed in visual units is not a speed in
+kilometres per second: the spatial AU map is compressed, while relative periods and each orbit’s
+Keplerian phase progression are retained.
+2.2 Three-Dimensional Orbit Orientation
+orientOrbitPoint() rotates Eq. (2.4) into the scene:
+pworld = Ry(Ω)Rx(i)Ry(ω)porbit(E).
+(2.6)
+GLM uses column vectors here. Therefore Ry(ω) acts first, then Rx(i), then Ry(Ω); reading the written
+matrices left-to-right as an execution order would be incorrect. The positive angles follow GLM’s right-
+handed axis-rotation convention, with Y as the scene’s vertical axis. This is the application’s orientation
+convention, not a claim of an epoch-aligned ephemeris.
+Table 2.1: Implemented realistic display scale and orbital orientation inputs. Ω, ω and initial phase M0 are in
+degrees; Tv is rounded simulation seconds.
+Planet
+aAU
+av
+Tv
+Ω
+ω
+M0
+Mercury
+0.3871
+7.9
+5.30
+48.3
+29.124
+22
+Venus
+0.7233
+11.5
+13.53
+76.7
+54.884
+124
+Earth
+1.0000
+14.0
+22.00
+-11.3
+114.208
+214
+Mars
+1.5237
+18.0
+41.38
+49.6
+286.502
+302
+Jupiter
+5.2026
+37.7
+260.96
+100.5
+273.867
+58
+Saturn
+9.5730
+54.3
+647.83
+113.7
+339.392
+166
+Uranus
+19.191
+82.4
+1842.43
+74.0
+96.999
+248
+Neptune
+30.070
+107.9
+3601.86
+131.8
+273.187
+135
+2.3 Model and Hierarchical Transformations
+For the Sun and planets, bodyModelMatrix() uses visual radius R, axial tilt α, and spin angle ψ =
+2πt/Tspin:
+Mbody = T(pworld)Rz(α)Ry(ψ)S(R).
+(2.7)
+A satellite inherits only its parent’s current translation.
+There is no ascending-node field in
+NaturalSatellite, nor inheritance of the parent’s tilt or spin.
+refreshPositions() uses
+βs = βs0 +2πt/Ts,orbit:
+psat = pparent +Rx(is)
+
+
+rs cosβs
+0
+rs sinβs
+
+.
+(2.8)
+
+
+=== PAGE 5 ===
+4
+satelliteModelMatrix() is separately
+Msat = T(psat)Ry(2πt/Ts,spin)S(Rs).
+(2.9)
+Equal stored orbit and spin periods are a synchronous timing approximation, not an implemented parent-
+facing orientation constraint. The spin matrix does not include the initial orbital phase or a frame aligned
+to the inclined orbit; this implementation must not be described as maintaining tidal locking.
+Two specialized transforms are also distinct:
+Mcloud = T(pEarth)Rz(23.44◦)Ry(2πt/4.35+0.18)S(1.018),
+(2.10)
+Mring = T(pSaturn)Rz(26.73◦)S(2.00).
+(2.11)
+The ring is tilted with Saturn but does not inherit its axial spin. Halo models use MbodyS(1.055). The Sun
+instead uses MSunS(1.032).
+The smooth normal must exclude translation and compensate for non-uniform scale:
+nworld = normalize
+ (M−1
+3×3)Tnlocal
+
+.
+(2.12)
+Figure 2.1: Geometry inspector showing selected vertices, normals, axes, world position, and the active transform
+matrices.
+2.4 Camera and Projection
+The camera stores distance dc, yaw γ, pitch η, and a pan offset opan. Its eye and target are
+t = pfocus +opan,
+c = t +dc
+
+
+cosη cosγ
+sinη
+cosη sinγ
+
+.
+(2.13)
+viewMatrix() uses the eye, target, and world-up vector. The exact GLM calls correspond to
+V = lookAt(c,t,(0,1,0)),
+P = perspective(52◦,W/H,0.04,700).
+(2.14)
+For g = cot(26◦) and A = W/H, the projection matrix is
+P =
+
+
+g/A
+0
+0
+0
+0
+g
+0
+0
+0
+0
+−(f +n)/(f −n)
+−2fn/(f −n)
+0
+0
+−1
+0
+
+.
+(2.15)
+Here n = 0.04 and f = 700; this is the conventional OpenGL [−1,1] depth-NDC convention. After the
+homogeneous divide, framebuffer coordinates with a top-left screen origin are
+xpx = (xndc/2+1/2)W,
+ypx = (1/2−yndc/2)H.
+(2.16)
+
+
+=== PAGE 6 ===
+5
+Mouse drag changes yaw/pitch by 0.18◦per pixel, pitch is clamped to [−88◦,88◦], and zoom multiplies
+distance by exp(−0.13∆wheel), then clamps it to [1.1,420]. Right drag pans in camera right/up directions.
+WASD/QE changes the pan offset in horizontal forward/right and world vertical directions. The focus
+approaches its moving target with blend 1−exp(−7.5∆t) rather than snapping every frame.
+CHAPTER III
+Geometry and Solar-System Objects
+3.1 Shared Vertex Representation
+SphereMesh normally uses 96 longitude segments and 64 polar-angle segments. A MeshVertex contains
+local position (x,y,z), smooth normal (nx,ny,nz), and texture coordinate (u,v). For longitude index j and
+north-to-south row k,
+u = j
+96,
+v = k
+64,
+λ = 2πu,
+θ = πv,
+p(θ,λ) =
+
+
+sinθ cosλ
+cosθ
+sinθ sinλ
+
+,
+n = p.
+(3.1)
+This is a polar angle, not latitude: θ = 0 is the north pole with v = 0; θ = π is the south pole with v = 1.
+The seam at u = 0 and u = 1 duplicates position and normal but keeps distinct UV coordinates. The
+image loader does not vertically flip texture pixels, so reversing the report’s v convention would change
+the described mapping.
+The count is (96+1)(64+1) = 6,305 vertices, 96·64·6 = 36,864 indices and 12,288 submitted triangles.
+The grid includes 192 degenerate pole triangles; the remaining 12,096 have nonzero ideal area. For a
+cell with a = k(97)+ j and b = a+97, the corrected outward-winding index triples are (a,a+1,b) and
+(a+1,b+1,b). These are the source’s actual topology, rather than a hand-authored sphere model.
+3.2 RingMesh: Saturn’s Annular Geometry
+RingMesh::RingMesh() in Meshes.cpp creates a flat annulus in the local XZ plane. It samples Nr =
+192 sectors; each sector boundary contributes an inner and an outer vertex. For j = 0,...,192,
+αj = 2π j
+Nr
+,
+p j,in = 1.16
+
+
+cosα j
+0
+sinα j
+
+,
+p j,out = 2.24
+
+
+cosα j
+0
+sinα j
+
+.
+(3.2)
+Both have normal (0,1,0), with UVs (0, j/Nr) and (1, j/Nr) respectively. The first coordinate is radial,
+while the second runs around the ring. For a = 2j, each annular strip is split into (a,a+1,a+2) and
+(a + 2,a + 1,a + 3). The total is 2(192 + 1) = 386 vertices, 1,152 indices, and 384 triangles. The
+duplicated end pair closes the seam.
+Equation (2.11) moves the annulus to Saturn, tilts it 26.73◦, and scales the local radii to 2.32 and 4.48
+world units. draw() uses indexed triangles; drawWireframe() temporarily selects polygon-line mode
+and restores fill; drawVertices() draws the 386 stored vertices as points. During the transparent ring
+pass, culling is disabled and the shader flips the normal on back-facing fragments, allowing both sides to
+be visible. The ring is a single zero-thickness surface, not thousands of simulated particles.
+
+
+=== PAGE 7 ===
+6
+(a) Indexed annular sectors.
+(b) Same camera, shaded ring.
+Figure 3.1: Dedicated Saturn ring captures. Cyan wireframe exposes the two triangles per annular sector; the
+shaded view adds procedural bands, transparent gaps, and Saturn’s shadow. The planet remains to show the ring’s
+scale and tilt.
+3.3 OrbitPath: Sampled Curves, Not Physical Objects
+SolarSystemSimulation::orbitPoints() returns 320 world-space positions for each of eight plan-
+etary paths. It substitutes E j = 2π j/320 into Eqs. (2.4)–(2.6). These are uniformly spaced parameter
+samples, not equal-time positions in realistic mode.
+OrbitPath uploads positions to a VAO/VBO, with no normals, UVs, or element buffer. Its draw call
+is glDrawArrays(GL_LINE_LOOP,0,320); the primitive closes the final-to-first segment automatically.
+All paths together store 2,560 positions. The path vertices are already oriented world coordinates, so
+orbit.vert uses PV p without a model matrix. These path samples are for display only: orbital motion
+is evaluated analytically each frame, not by moving through the line vertices.
+The normal interactive path color is 0.45Cbody + 0.55(0.72,0.72,0.72), with alpha 0.30. The isolated
+report capture increase line opacity/width only for legibility, as its caption notes. Depth testing stays
+active, depth writes are temporarily disabled, and ordinary alpha blending composites the lines. Changing
+orbit mode rebuilds the path buffers so the curves agree with the selected position model. Satellite orbit
+paths are not implemented, and no orbit lines are composited into ray-tracing mode.
+Figure 3.2: Eight realistic orbit paths isolated from bodies/stars; distance 230, elevation 70◦. For print legibility
+only, this diagnostic capture uses alpha 0.75 and 2-pixel lines; normal paths use alpha 0.30.
+3.4 StarField: Point Geometry and a Camera-Centered Background
+StarField creates 2,600 StarVertex records, each containing position, RGB color, and point size. It
+uses the fixed random-generator seed 0x51A4F13D. For independent uniform samples y ∈[−1,1] and
+
+
+=== PAGE 8 ===
+7
+u1,u2 ∈[0,1],
+ϕ = 2πu1,
+r = 135+75u2,
+pstar = r
+
+
+p
+1−y2 cosϕ
+y
+p
+1−y2 sinϕ
+
+.
+(3.3)
+The directional distribution is uniform over the sphere; radius is uniformly sampled over [135,210],
+not uniformly by shell volume. A further random sample linearly mixes warm (1,0.76,0.58) and cool
+(0.62,0.78,1) colors. Stored size is 1+3.2u3u4, where u3 and u4 are independent samples. There is no
+star texture and no triangle index buffer.
+main.cpp sends Vstar = mat4(mat3(V)) to the star vertex shader: camera rotation is retained, but
+translation is removed. Hence moving or zooming the eye does not create physical stellar parallax. In
+view space, its point size and twinkle are
+spx = max
+
+1, sstored
+135
+max(−zview,55)
+
+,
+(3.4)
+b(t) = 0.76+0.24sin(1.7t +0.31px +0.47py).
+(3.5)
+Here t is wall-clock rendering time, so stars may twinkle even while orbital time is paused. star.frag
+maps point coordinates to q = 2uvpoint −1, discards ∥q∥2 > 1, and outputs glow g = exp(−3.6∥q∥2)b.
+It returns (Cstarg,g), which is blended with GL_SRC_ALPHA,GL_ONE; depth writes are disabled. This is
+stylized point-sprite illumination, not light from stars affecting the planets.
+Figure 3.3: StarField-only framebuffer and an enlarged crop of that same capture. Small circular points, varying
+brightness, and warm/cool tints are generated by the point shaders; the enlarged crop is not an additional
+higher-density star render.
+3.5 GPU Buffer Organization and Reuse
+The VAO records the layout and enabled attributes.
+The VBO stores records; an EBO sup-
+plies triangle indices for the sphere and ring.
+glVertexAttribPointer() uses each record’s
+stride and offsetof() for offsets, rather than assuming an arbitrary packed C++ memory layout.
+glBufferData(...,GL_STATIC_DRAW) uploads fixed geometry once. Animation changes uniform
+matrices, not the stored sphere vertices.
+
+
+=== PAGE 9 ===
+8
+Table 3.1: Geometry inventory and GPU draw primitives. Triangle counts are submitted counts, including the
+sphere’s degenerate pole triangles.
+Resource
+Vertices
+Indices
+Primitive / purpose
+Production sphere
+6,305
+36,864
+Indexed triangles; reused by Sun, planets, moons and shells
+Inspection sphere
+561
+3,072
+32-by-16 grid; 1,024 submitted triangles; wireframe, points and pick-
+ing
+Saturn RingMesh
+386
+1,152
+Indexed triangles; 384 annular triangles
+OrbitPath (each)
+320
+0
+Line loop; eight paths
+StarField
+2,600
+0
+Points; position, color and size attributes
+AxisGizmo
+6
+0
+Three line segments; local length 1.65
+Ray screen primitive
+3
+0
+Full-screen triangle generated from vertex ID; no VBO
+For MeshVertex, attribute locations are position 0, normal 1, and UV 2. StarField reuses these locations
+with a different interpretation: position 0, color 1, size 2. VAOs keep these layouts separate. RAII
+destructors delete the owned buffers and arrays; OrbitPath supports move ownership so a vector can be
+rebuilt without copying OpenGL handles.
+3.6 Individual Object Parameters and Portraits
+The following separate, larger framebuffer crops preserve each object’s raster material and default Sun-
+centered point lighting. Every spherical body shares Eq. (3.1); planetary motion uses Eqs. (2.1)–(2.6)
+and its body model uses Eq. (2.7). Every moon uses Eqs. (2.8) and (2.9), with the individual constants
+below. Orbit/spin presentation seconds are not the real-world day values in the planetary orbit records.
+Sun
+Figure 3.4: Sun.
+Geometry: 6,305 vertices, 12,288 triangles; visual radius 4.30.
+Motion: central origin; 23.0 s spin; 7.25◦tilt.
+Material: procedural emissive surface; roughness 1.00; orange-yellow halo.
+Object equation: Msun = Rz(7.25◦)Ry(2πt/23)S(4.30).
+Mercury
+Figure 3.5: Mercury.
+Geometry: shared sphere; visual radius 0.55.
+Orbit: a = 0.3871 AU, e = 0.2056, i = 7.00◦, T = 87.969 d; 7.9 visual units.
+Spin/material: 18.0 s, 0.03◦tilt; mercury.jpg; roughness 0.92.
+Object equation: Eqs. (2.3), (2.6), and (2.7) with R = 0.55.
+Venus
+Figure 3.6: Venus.
+Geometry: shared sphere; visual radius 0.90.
+Orbit: a = 0.7233 AU, e = 0.0068, i = 3.39◦, T = 224.701 d; 11.5 visual
+units.
+Spin/material: 15.5 s, 177.4◦retrograde tilt; venus.jpg; roughness 0.82.
+Atmosphere: warm RGB tint (1.00,0.56,0.12) with strength 0.24.
+
+
+=== PAGE 10 ===
+9
+Earth
+Figure 3.7: Earth.
+Geometry: shared sphere; visual radius 1.00; cloud shell scale 1.018.
+Orbit: a = 1.0000 AU, e = 0.0167, i = 0.00◦, T = 365.256 d; 14.0 visual
+units.
+Spin/material: 4.8 s, 23.44◦tilt; day, night, and cloud maps; roughness 0.42.
+Special passes: moving clouds, city lights on the night side, and blue atmo-
+sphere.
+Mars
+Figure 3.8: Mars.
+Geometry: shared sphere; visual radius 0.72.
+Orbit: a = 1.5237 AU, e = 0.0934, i = 1.85◦, T = 686.980 d; 18.0 visual
+units.
+Spin/material: 4.9 s, 25.19◦tilt; mars.jpg; roughness 0.88.
+Atmosphere: weak red-orange rim with strength 0.10.
+Jupiter
+Figure 3.9: Jupiter.
+Geometry: shared sphere; visual radius 2.35.
+Orbit: a = 5.2026 AU, e = 0.0489, i = 1.30◦, T = 4,332.589 d; 37.7 visual
+units.
+Spin/material: 2.6 s, 3.13◦tilt; jupiter.jpg; roughness 0.66.
+Hierarchy: parent of Io, Europa, Ganymede, and Callisto through Eq. (2.8).
+Saturn
+Figure 3.10: Saturn.
+Geometry: sphere plus 386-vertex annulus; visual radius 2.00.
+Orbit: a = 9.5730 AU, e = 0.0565, i = 2.49◦, T = 10,755.699 d; 54.3 visual
+units.
+Spin/material: 2.9 s, 26.73◦tilt; saturn.jpg; roughness 0.72.
+Rings: radial bands, gaps, transparency, illumination, and geometric planet
+shadow.
+Uranus
+Figure 3.11: Uranus.
+Geometry: shared sphere; visual radius 1.35.
+Orbit: a = 19.191 AU, e = 0.0472, i = 0.77◦, T = 30,589 d; 82.4 visual units.
+Spin/material: 4.1 s, 97.77◦tilt; uranus.jpg; roughness 0.48.
+Atmosphere: cyan rim with strength 0.16.
+
+
+=== PAGE 11 ===
+10
+Neptune
+Figure 3.12: Neptune.
+Geometry: shared sphere; visual radius 1.30.
+Orbit: a = 30.070 AU, e = 0.0086, i = 1.77◦, T = 59,800 d; 107.9 visual
+units.
+Spin/material: 3.8 s, 28.32◦tilt; neptune.jpg; roughness 0.44.
+Atmosphere: blue rim with strength 0.20.
+Moon
+Figure 3.13: Moon.
+Geometry: shared sphere; visual radius 0.27.
+Local orbit: Earth parent; radius 2.55; inclination 5.1◦; phase 32◦.
+Motion/material: 4.0 s orbit and spin; moon.jpg; roughness 0.94.
+Hierarchy: pMoon = pEarth +Rx(5.1◦)plocal; no ascending-node rotation.
+Io
+Figure 3.14: Io.
+Geometry: shared sphere; visual radius 0.24.
+Local orbit: Jupiter parent; radius 3.35; inclination 0.2◦; phase 205◦.
+Motion/material: 2.6 s orbit and spin; io.jpg; roughness 0.88.
+Rotation: equal spin/orbit timing; no guaranteed parent-facing orientation
+constraint.
+Europa
+Figure 3.15: Europa.
+Geometry: shared sphere; visual radius 0.21.
+Local orbit: Jupiter parent; radius 4.15; inclination 0.5◦; phase 118◦.
+Motion/material: 3.8 s orbit and spin; europa.jpg; roughness 0.84.
+Transform: Jupiter’s animated world position is added before the moon model
+matrix is built.
+Ganymede
+Figure 3.16: Ganymede.
+Geometry: shared sphere; visual radius 0.30.
+Local orbit: Jupiter parent; radius 5.10; inclination 0.2◦; phase 274◦.
+Motion/material: 5.4 s orbit and spin; ganymede.jpg; roughness 0.90.
+Transform: same parent-relative form as Eq. (2.8).
+
+
+=== PAGE 12 ===
+11
+Callisto
+Figure 3.17: Callisto.
+Geometry: shared sphere; visual radius 0.28.
+Local orbit: Jupiter parent; radius 6.15; inclination 0.3◦; phase 14◦.
+Motion/material: 7.4 s orbit and spin; callisto.jpg; roughness 0.96.
+Transform: parent translation, inclined local orbit, axial rotation, and scale.
+Figure 3.18: Jupiter with Io, Europa, Ganymede and Callisto in a single parent-child scene. The local moon orbit
+offsets are added to Jupiter’s current world position; the individual portraits above isolate the much smaller moon
+surfaces.
+CHAPTER IV
+Illumination, Shading, and Textures
+4.1 Selectable Raster Light Sources
+The raster pipeline offers a point light, directional light, and spotlight. The point-light default remains the
+Sun at world position pL = (0,0,0). For a surface point p and a unit ray-travel direction D, the directions
+toward the point and directional sources are
+Lpoint =
+pL −p
+∥pL −p∥,
+Ldir = −D
+∥D∥.
+(4.1)
+The spotlight uses Lpoint and multiplies its intensity by a soft cone term,
+q = smoothstep(cosθo,cosθi,(−Lpoint)·D),
+θi < θo,
+(4.2)
+where θi and θo are the inner and outer half-angles. All directions in these equations are normalized. For
+distance dL = ∥pL −p∥and intensity I, the exact body/ring source factors are
+A =
+
+
+
+
+
+I/(1+0.00105d2
+L),
+point,
+I,
+directional,
+Iq/(1+0.00008d2
+L),
+spot.
+(4.3)
+These are softened artistic falloffs, not a physically calibrated 1/d2
+L law. The spotlight deliberately
+uses a smaller quadratic coefficient. Light RGB color and intensity are independent controls. The
+camera-following spotlight places pL at the eye and aims D from the eye toward the current focus.
+
+
+=== PAGE 13 ===
+12
+For the selected direction L, surface point p, unit normal N, and view position pV,
+V =
+pV −p
+∥pV −p∥,
+H =
+L+V
+∥L+V∥.
+(4.4)
+For roughness ρ ∈[0,1], body.frag uses m = 120 −111ρ. The exact enhanced Blinn-Phong scalar
+terms and linear-color composition are
+d = max(N ·L,0),
+D = 3.25Ad,
+(4.5)
+SB = 1.4(1−ρ)Ad max(N ·H,0)m,
+(4.6)
+Clinear = 0.012Calbedo +DCalbedo ⊙Clight +SBClight ⊙(1,0.91,0.76).
+(4.7)
+The symbol ⊙means component-wise RGB multiplication. The ambient contribution is a fixed 0.012
+albedo term and is not ray-traced global illumination. Increasing roughness decreases specular strength
+and lowers its exponent. This is a roughness-controlled Phong family model, not a microfacet physically
+based BRDF. After Earth night lights, if applicable, all three modes apply
+Cdisplay = (1−exp(−1.18Clinear))1/2.2 .
+(4.8)
+Exponentiation and exponential here act component-wise. The Sun follows its own emissive branch
+instead: Cdisplay = (1−exp(−1.25·2.6Calbedo))1/2.2, so it is not darkened by the selected raster light.
+(a) Point light at the Sun.
+(b) Directional light.
+(c) Camera spotlight.
+Figure 4.1: The same textured Moon and raster pipeline under the three selectable light types, with a common
+camera. These crops intentionally vary color and intensity as well as type: point I = 1 and white; directional
+I = 1.7 and warm (1,0.42,0.16); camera spotlight I = 2.2 and blue (0.16,0.58,1) with 2◦/5◦inner/outer
+half-angles. They demonstrate controls, not a controlled same-color intensity experiment.
+4.2 Gouraud, Phong, and Enhanced Modes
+The UI’s “Gouraud” mode is a Gouraud-style per-vertex lighting implementation. In body.vert, each
+vertex computes Dj and a Phong-reflection specular scalar
+SP,j = 1.4(1−ρ)Ajdj max(V j ·reflect(−L j,N j),0)m.
+(4.9)
+The varyings vGouraudDiffuseLight and vGouraudSpecular are interpolated by the rasterizer. For
+perspective-correct weights bλj,
+D(x) = ∑
+j
+bλjD j,
+S(x) = ∑
+j
+bλ jSP,j,
+bλ j =
+λj/w j
+∑k λk/wk
+.
+(4.10)
+Here λj are screen-space barycentric weights and w j is clip-space w. The fragment shader still samples
+the albedo texture and combines the interpolated scalars into final RGB using Eq. (4.7). It does not
+interpolate completed vertex RGB colors as classic textbook Gouraud shading often does.
+Classic Phong instead interpolates the world normal and renormalizes it, then evaluates Eq. (4.9) at each
+
+
+=== PAGE 14 ===
+13
+fragment:
+N(x) = normalize
+ 
+3
+∑
+j=1
+bλ j(x)N j
+!
+.
+(4.11)
+Enhanced mode also evaluates lighting per fragment, but replaces the reflection-vector specular term with
+the halfway-vector SB. Textures, roughness, Earth night lights, and tone mapping remain active in all
+three modes. Cloud and atmosphere rendering are independently enabled passes, not exclusive Enhanced
+features. Their main differences are lighting-evaluation location and specular formulation. The dense
+sphere samples normals finely, so the visual differences are often subtle; coarse wireframe/vertex overlays
+explain the underlying tessellation without implying a different feature set.
+Table 4.1: Actual shading-mode branches in the body shaders.
+Mode
+Lighting evaluation
+Specular and shared features
+Enhanced
+Per fragment
+Blinn
+halfway
+vector;
+common
+mate-
+rial/texture/night/tone pipeline
+Gouraud-style
+Two scalars per vertex, interpolated
+Phong reflection vector; albedo and final RGB
+still per fragment
+Phong
+Per fragment
+Phong reflection vector; same material and in-
+dependent shell passes
+(a) Enhanced mode.
+(b) Gouraud mode.
+(c) Phong mode.
+Figure 4.2: Earth rendered at the same camera, time, mesh, and material state.
+4.3 Texture and Specialized Passes
+4.3.1 Texture Loading, UV Sampling and Procedural Fallback
+Texture2D loads JPEG files using stb, selects the appropriate channel format, uploads the pixels,
+generates mipmaps, repeats longitude u, clamps polar v to the edge, and uses trilinear minification
+and linear magnification filtering. Day/night RGB maps use an sRGB internal format, so OpenGL
+decodes them when sampled; the cloud map is loaded as linear data. Texture units are bound to the
+sampler uniforms, and interpolated UVs select pixels. No normal map, displacement map or geometry
+displacement is used.
+When surface maps are disabled, surfaceColor() synthesizes object-space patterns from value noise
+and five-octave fractal noise (initial amplitude 0.52, frequency multiplier 2.03, amplitude multiplier 0.48).
+Style branches imitate rocky terrain, clouds, continents, gas bands, and storms. These patterns change
+color, not the sphere’s shape. The Sun always uses its procedural animated emission because it has no
+downloaded day map. Its boiling-noise coordinate includes (0.07t,−0.045t,0.03t) with simulation time
+t.
+
+
+=== PAGE 15 ===
+14
+(a) Day map; shells disabled.
+(b) Procedural fallback.
+Figure 4.3: Same Earth camera and lighting with and without its surface map. The procedural coastlines are
+illustrative, not an astronomical reconstruction.
+4.3.2 Earth Night Map and Cloud Shell
+Earth enables uHasNightMap only when its surface map is active. The actual night-light addition in
+body.frag is
+fday = smoothstep(−0.12,0.16,N ·L)step(0.0001,A),
+(4.12)
+Clinear ←Clinear +2.15(1−fday)Cnight.
+(4.13)
+The smooth mask softens the terminator; the step also activates night lights if the chosen source does not
+reach the fragment, for example outside a spotlight cone. This is not the simpler 1−max(N ·L,0) mask.
+cloud.frag samples the separate cloud image on the shell in Eq. (2.10). It maps the largest RGB
+channel cmax to coverage c = smoothstep(0.055,0.52,cmax), discards c < 0.01, and uses α = c(0.46 +
+0.26clamp(h,0,1)), where h = max(N ·L,0)Ishell. The cloud color has a dim blue-gray base, direct-light
+contribution, and view-dependent silver lining. The shell rotates on a 4.35 s period independently of the
+4.8 s Earth body.
+(a) Cloud and atmosphere passes on.
+(b) Night-side city-light map.
+Figure 4.4: Two Earth aspects. The night capture deliberately moves the camera to the side opposite the Sun, with
+cloud/atmosphere shells disabled to expose the night map. It is not a same-camera comparison.
+4.3.3 Atmosphere and Sun Halo
+The selected raster source affects clouds, atmosphere shells, and Saturn’s rings. Clouds and halos use
+direction, intensity and spotlight cone visibility, but do not apply the body’s quadratic distance falloff in
+Eq. (4.3). Atmosphere shells use the exact rim factor
+Irim = (1−clamp(N ·V,0,1))2.65 ,
+(4.14)
+
+
+=== PAGE 16 ===
+15
+with additive blending and controlled alpha. For a planet, its sunlit weight and alpha are
+ha = smoothstep(−0.32,0.38,N ·L)clamp(Ishell,0,1),
+(4.15)
+αa = IrimIbody mix(0.055,0.44,ha).
+(4.16)
+The halo model sizes were given after Eq. (2.11). The Sun bypasses the sunlit-side mask, uses its own
+tint, and multiplies its stored atmosphere strength by 0.42. This is an artistic rim shell, not volumetric
+atmospheric scattering or an absorption simulation.
+4.3.4 Ring Bands, Transparency and Saturn’s Shadow
+ring.frag uses radial UV w to make bands and transparent gaps; it does not sample a ring texture file.
+The important terms are
+B(w) = 1
+2 + 1
+2 sin(94w+1.7sin31w),
+(4.17)
+G1(w) = smoothstep(0.015,0.032,|w−0.63|),
+(4.18)
+G2(w) = smoothstep(0.006,0.014,|w−0.34|),
+(4.19)
+F(w) = smoothstep(0.01,0.07,w)
+
+1−smoothstep(0.91,0.995,w)
+
+,
+(4.20)
+αring = F(w)mix(0.30,0.76,B(w))mix(0.80,1,Bb(w))G1(w)G2(w),
+(4.21)
+where Bb(w) = 1
+2 + 1
+2 sin(33w+1.6sin9w) is a broader band term. The first UV coordinate drives both
+color and opacity; the angular coordinate is stored but these radial patterns do not use it.
+For a ring point p, let q = pSaturn −p, ℓ= q·L, and Dmax = dL for finite lights or 100,000 for a directional
+source. The shader computes
+dmin = ∥q−Lclamp(ℓ,0,Dmax)∥,
+(4.22)
+hshadow =
+
+1−smoothstep(0.94R,1.06R,dmin)
+
+step(0,ℓ)step(ℓ,Dmax)step(0.0001,A).
+(4.23)
+This is a softened closest-point segment/sphere shadow test. Ring illumination is (0.22 + 2.8A|N ·
+L|)mix(1,0.09,hshadow). It then applies 1−exp(−Cbase⊙Clight Iring) and gamma exponent 1/2.2, without
+the body shader’s 1.18 exposure multiplier. The raster pass shadows the ring by Saturn; it does not cast
+ring shadows back onto the planetary body or provide general interplanetary shadow maps.
+CHAPTER V
+Rasterization, Ray Tracing, and Interaction
+5.1 Rasterization Pipeline
+The raster renderer clears color and depth buffers, draws the star field and orbit curves, submits opaque
+spheres, draws Earth clouds and Saturn’s ring with blending, adds atmosphere and glow shells, then
+optional geometry overlays, labels, and the interface. Depth testing uses GL_LEQUAL; back-face culling
+removes back-facing surfaces of closed meshes. Transparent rings are deliberately two-sided. OpenGL
+converts clip-space triangles to fragments, while the fragment shader determines the final material and
+light response [1].
+The shared sphere is transformed separately for each object: the same local vertex produces different
+world positions through a different M. The normal is transformed with Eq. (2.12), not PVM. World
+position, world normal and UV are interpolated to fragments; normals are normalized again before
+lighting. No geometry or tessellation shader is used.
+Standard transparent passes use Cout = αCsrc +(1−α)Cdst. Stars and halos instead use additive Cout =
+αCsrc +Cdst. Depth writes are temporarily disabled for paths and transparent/overlay passes, preventing
+their depth values from hiding later surfaces. This simple fixed draw order is not order-independent
+transparency.
+
+
+=== PAGE 17 ===
+16
+Raster mode already requests 4-sample MSAA with glfwWindowHint(GLFW_SAMPLES,4) and enables
+GL_MULTISAMPLE. This is a requested context configuration, not a measured guarantee that every GPU
+provides exactly four samples. It primarily smooths geometric edges; it does not make the analytical ray
+shader trace four rays per pixel.
+5.2 Analytical Ray Tracing
+The optional ray tracer is a separate full-screen mode. Its illumination remains the fixed Sun-centered
+point light; the three raster-light controls are intentionally disabled in this mode. For pixel coordinates
+(x,y), the program reconstructs a world-space ray
+r(t) = o+td,
+t ≥0.
+(5.1)
+For a sphere with center c and radius R, substituting the ray into ∥r(t)−c∥2 = R2 gives
+at2 +bt +c = 0,
+a = d ·d,
+b = 2d ·(o−c),
+c = ∥o−c∥2 −R2.
+(5.2)
+The shader uses normalized d, so a = 1, and implements the equivalent half-b form: h = d · (o −c),
+∆= h2 −c, tnear/far = −h∓
+√
+∆. It accepts the nearest root above ε = 0.002 or, if necessary, the farther
+valid root. It tests all uploaded spheres and the ring and keeps the closest hit.
+5.2.1 Full-Screen Ray Reconstruction
+raytrace.vert uses gl_VertexID to generate clip-space points (−1,−1), (3,−1) and (−1,3), forming
+one triangle that covers the viewport. It needs a VAO, but no mesh VBO. The interpolated NDC pixel
+position (xn,yn) produces
+q = (PV)−1(xn,yn,1,1)T,
+p far = qxyz/qw,
+o = ceye,
+d = normalize(pfar −o).
+(5.3)
+The CPU uploads at most 16 analytical spheres; this scene uses nine main bodies plus five optional moons.
+Planet colors are a 0.38 mix of their base and secondary colors, while moons use their stored base color.
+Geometry still moves through the same CPU orbit simulation, but these spherical ray materials have no
+visible rotating surface patterns.
+5.2.2 Analytical Ring Intersection
+For ring center cr and unit normal nr,
+tr = (cr −o)·nr
+d ·nr
+,
+rr =
+phit −cr −nr
+
+(phit −cr)·nr
+.
+(5.4)
+Near-parallel rays are rejected if the denominator magnitude is below 10−5. Positive hits above ε
+are accepted only for 2.32 ≤rr ≤4.48 and outside the shader’s procedural gaps. Ray-ring gaps use
+different centers and thresholds from the raster ring (w = 0.61 and 0.29), so the material patterns are not
+identical in the two renderers. The ray ring is opaque at accepted points and rejected at gaps, rather than
+alpha-composited like RingMesh.
+5.2.3 Direct Light, Hard Shadows and One Reflection
+The ray tracer always lights from sphere 0, the Sun. It uses Phong reflection-vector specular lighting,
+the same body-style 0.00105 quadratic attenuation and diffuse scale 3.25, but a specular multiplier of
+1.5 rather than the raster body’s 1.4. A shadow ray starts at phit +εN and tests occluders before the Sun
+distance. The Sun and the hit sphere are excluded from appropriate self-shadow tests. A blocked point
+uses visibility 0.055 rather than zero, leaving a small stylized direct contribution. Rings can shadow
+spheres, and spheres can shadow rings in this branch.
+One optional reflection bounce uses
+dre fl = d −2(d ·N)N.
+(5.5)
+The reflected ray starts at the same normal-offset point. It shades one secondary hit, or samples
+
+
+=== PAGE 18 ===
+17
+the procedural sky if it misses; there is no recursive third ray bounce. Sphere reflectivity is f =
+clamp(0.26(1 −ρ),0.01,0.18), the ring uses 0.025, and final linear color is mix(Cdirect,Cre flected, f)
+before the common tone/gamma conversion. Thus a small image of Saturn or its annulus on another
+sphere can be a real secondary-ray hit, although this reflectivity is an illustrative material choice rather
+than a faithful planetary surface model.
+The ray tracer intentionally uses analytical colors rather than raster texture maps, cloud shells, or
+atmosphere meshes. Orbit curves and geometry overlays are absent because the raster scene is not drawn
+in this branch. Its visible stars come from skyColor(direction): a directional hash grid and twinkle,
+not the StarField point buffer. The full-screen pass disables depth testing/culling/blending while it writes
+the image; labels and UI are then drawn over it. There is no BVH, path tracing, indirect diffuse light,
+physically sampled area light, or hardware ray-tracing API.
+(a) Raster material and ring.
+(b) Ray-traced Saturn and ring.
+Figure 5.1: Close Saturn views from both rendering branches. Raster mode samples the surface map and alpha ring
+bands; ray mode uses analytical material colors and annular intersections with hard shadows and an optional
+reflection bounce.
+5.3 Selection and Interaction
+Picking is implemented for the Sun and eight planets only. pickBodyVertex() receives their nine
+bodyModels; it does not receive satellite models or Saturn’s ring. It rescales window cursor coordinates
+to framebuffer pixels before converting to NDC, which matters on high-DPI displays. Inverting PV at
+NDC depths −1 and +1, followed by homogeneous divides, supplies near/far world points and the ray
+direction. Its origin is the eye.
+The picker first finds the closest positive intersection with those body spheres. It then loops over the
+561-vertex inspection sphere on that one body, transforms each candidate by M, rejects candidates with
+Nworld ·normalize(ceye −pworld) ≤0, and rejects points behind the eye or outside the NDC frustum. The
+remaining candidate with the smallest squared pixel distance to the cursor is selected. There is no vertex-
+distance acceptance threshold. The 5-pixel limit in main.cpp distinguishes a click from accumulated
+camera-drag movement; it is not a vertex-picking radius.
+The inspector reports the selected local/world position, local/world normal, UV, projected pixel/depth,
+and M, V, P. Its selected record is refreshed while bodies move. Wireframe and vertex overlays use the
+inspection sphere, so the reported vertex index belongs to that 561-vertex grid, not the production sphere.
+Visibility filtering is geometric front-side/frustum filtering, not a read-back of a per-pixel object-ID buffer.
+
+
+=== PAGE 19 ===
+18
+Figure 5.2: Enlarged inspector crop from Fig. 2.1. For the selected Earth vertex 264, the north-to-south UV
+convention gives (u,v) = (0,0.5) and local position/normal (1,0,0). The displayed world values follow the planet
+model transform.
+The main controls are left-drag to orbit the camera, right-drag to pan, mouse wheel to zoom, WASD/QE
+to move, number keys to select planets, Space to pause, R to reset, and O for overview. Interface options
+toggle orbit paths, labels, atmospheres, textures, moons, shading mode, geometry overlays, ray-traced
+shadows, and the reflection bounce. The raster-light panel selects source type, color, intensity, position or
+direction, and spotlight cone angles.
+CHAPTER VI
+Implementation, Results, and Verification
+6.1 Implementation Environment
+The project is built with CMake and C++20 using the Windows x64 preset. Its principal dependencies are
+GLFW, GLAD, GLM, stb image/image-write, and Dear ImGui. The present preset names the installed
+Visual Studio generator and uses the adjacent vcpkg toolchain; VS Code can act as the editor and CMake
+front end without replacing that C++ compiler toolchain.
+Assets remain under assets/textures.
+The actual CMake file embeds the source shader, as-
+set, and output directories using SOLAR_SYSTEM_SHADER_DIR, SOLAR_SYSTEM_ASSET_DIR, and
+SOLAR_SYSTEM_OUTPUT_DIR. It does not copy shaders/textures beside the executable. The current
+binary therefore depends on those source-tree resource paths; a relocatable release would need an explicit
+packaging change.
+Code navigation. main.cpp coordinates input, uniforms and draw passes; SolarSystem.cpp owns or-
+bital positions and model matrices; Camera.cpp supplies navigation and view matrices; Meshes.cpp con-
+structs geometry and buffers. Shader.cpp compiles/links programs and uploads uniforms, Texture.cpp
+uploads filtered images, VertexPicker.cpp selects a body/vertex, and RayTracer.cpp uploads the
+analytical scene. Body, ring, star and ray shader functions are identified in their respective sections.
+6.2 Automated and Visual Verification
+self-test renders four hidden-context frames: Enhanced/point, Gouraud/directional, Phong/spot
+with geometry overlays and centered picking, then ray tracing. It checks Earth’s display radius/period,
+Neptune’s distance above 100, relative period ordering, and a four-point Mercury orbit with aphelion
+farther than perihelion. Each frame checks glGetError(); picking must select the centered Sun, and the
+ray frame’s center RGB sum must be at least 24. The current build passes. These are smoke checks, not
+exhaustive intersection/image tests, framebuffer-completeness checks or a frame-rate benchmark.
+
+
+=== PAGE 20 ===
+19
+capture-report produces 36 RGB PNGs using paused orbital time, fixed scene/camera settings, one
+warm-up frame per capture, and row reversal after framebuffer readback. The report selects and crops
+these images losslessly; original captures are preserved. Portraits face the sunlit hemisphere under the
+original Sun point source, not an added fill light. Diagnostic path opacity/width changes are stated in the
+caption. The star detail is a 160-by-160 crop. Seeded geometry is repeatable, but wall-clock star twinkle
+and GPU rasterization can vary pixels; captures are not bitwise deterministic or fabricated.
+6.3 Limitations and Future Work
+The AU distance map and body radii are deliberately hybrid-scaled; a literal astronomical scale would
+make planets too small or too distant for one interactive view. Planet spins use presentation periods and
+fixed axial tilts rather than real spin-period ratios. Planetary initial phases and orbital-element conventions
+are not a date-based ephemeris. Satellites use local demonstration periods and circular offsets, and equal
+spin/orbit periods do not enforce a tidally locked face. The ray tracer uses analytical colors instead of
+full raster textures and shells. Transparency, shadows and atmospheres are stylized approximations as
+detailed above.
+Relevant future work includes a parent-facing satellite orientation frame, calendar/epoch-based orbital
+state, more satellites and moon paths, textured ray hits using inverse body transforms, a BVH for larger ray
+scenes, finite-area-light soft shadows, ray-tracing supersampling or post-process anti-aliasing, physically
+based materials, atmosphere scattering, improved transparent-pass ordering, and level-of-detail meshes.
+Ordinary raster MSAA is already requested; adding anti-aliasing from scratch is therefore not an accurate
+description of the remaining work.
+CHAPTER VII
+Conclusion
+The project demonstrates how reusable vertices become positioned objects through model, view, pro-
+jection, orbital, and hierarchical transformations; how normals, textures, illumination, and interpolation
+determine raster appearance; and how analytical rays provide a different visibility solution. The realistic
+Keplerian orbit update improves spacing and speed behavior while retaining compressed distances and
+presentation-scale radii. Separate screenshots expose each included celestial object’s parameters, and
+dedicated ring, orbit-path and star-field evidence explains the non-spherical geometry. The source-audited
+equations, fixed-state captures and clearly scoped smoke test support assessment and extension without
+overstating scientific fidelity or test coverage.
+REFERENCES
+[1] Khronos Group, “OpenGL 3.3 Core Profile Specification,” Mar. 2010. [Online]. Available: https://registry.
+khronos.org/OpenGL/specs/gl/glspec33.core.pdf
+[2] H. Gouraud, “Continuous shading of curved surfaces,” IEEE Transactions on Computers, vol. C-20, no. 6, pp. 623-629,
+Jun. 1971.
+[3] B. T. Phong, “Illumination for computer generated pictures,” Communications of the ACM, vol. 18, no. 6, pp. 311-317,
+Jun. 1975.
+[4] T. Whitted, “An improved illumination model for shaded display,” Communications of the ACM, vol. 23, no. 6, pp.
+343-349, Jun. 1980.
+[5] G-Truc Creation, “OpenGL Mathematics (GLM) documentation.” [Online]. Available: https://github.com/g-truc/
+glm
+[6] NASA, “Solar System Exploration:
+Planets and Moons.” [Online]. Available:
+https://science.nasa.gov/
+solar-system/
+
+

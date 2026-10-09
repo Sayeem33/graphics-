@@ -53,6 +53,47 @@ A modern, self-contained texturing architecture with hardware mipmapping and tri
 
 ---
 
+### 4. Advanced Illumination System (Ambient, Diffuse, Specular, Point, Spot, Emissive) & Blinn-Phong Shading
+A full, academically rigorous **Blinn-Phong Illumination Pipeline** implemented directly in GLSL fragment shaders with per-fragment normal interpolation:
+
+1. **Blinn-Phong Shading Model**:
+   - Uses the halfway vector $\vec{H} = \text{normalize}(\vec{L} + \vec{V})$ between the incident light vector $\vec{L}$ and camera view vector $\vec{V}$:
+     $$\text{specFactor} = (\max(\vec{N} \cdot \vec{H}, 0.0))^{\alpha}$$
+   - Produces physically accurate, smooth specular highlights on the sports car's curved surfaces, wet asphalt roadway, and river surface, avoiding the artificial cutoff of classic reflection models at glancing angles.
+   - Evaluated per-fragment across directional sunlight, all 15 active point lights, and dual forward spotlights.
+
+2. **Ambient Lighting ($I_a = K_a \cdot (L_{a,\text{global}} + L_{a,i})$)**:
+   - Eliminates pitch-black unlit voids and simulates indirect atmospheric light scattering.
+   - Global ambient term (`ambientGlobal`) modulated by material ambient reflectivity ($K_a$) and textures.
+   - Toggle Day / Night with **`[N]`** to observe the shift from golden ambient daylight to deep navy ambient moonlight.
+
+3. **Diffuse Lighting ($I_d = K_d \cdot \max(\vec{N} \cdot \vec{L}, 0) \cdot L_d$)**:
+   - Implements Lambert's cosine law where perceived brightness depends on the angle between surface normal $\vec{N}$ and incident light vector $\vec{L}$.
+   - Evaluated for directional sunlight/moonlight, all point lights, and dual car headlights.
+
+4. **Point Lights with Inverse-Square Attenuation & Toggle (`[L]` Key)**:
+   - Omnidirectional spherical emitters:
+     $$F_{\text{att}} = \frac{1}{k_c + k_l d + k_q d^2} \cdot \text{clamp}\left(1 - \frac{d}{r_{\text{cutoff}}}, 0, 1\right)$$
+   - Press **`[L]`** to toggle all 15 active point lights ON / OFF in real time:
+     - **8 Roadside Street Lamps**: Warm incandescent amber illumination ($1.0, 0.82, 0.55$) lit at night.
+     - **5 Tunnel Ceiling Fixtures**: High-intensity cool fluorescent white illumination ($0.92, 0.96, 1.0$) active 24/7.
+     - **2 Gas Station Canopy Downlights**: Crisp white under-canopy downlights illuminating fuel pump bays.
+
+5. **Spotlights with Dual Conical Falloff (`[H]` Key)**:
+   - Mounted on the front bumper of the car as twin headlights:
+     $$\theta = \vec{L} \cdot (-\vec{D}_{\text{spot}}), \quad I = \text{clamp}\left(\frac{\theta - \cos\phi_{\text{outer}}}{\cos\theta_{\text{inner}} - \cos\phi_{\text{outer}}}, 0, 1\right)$$
+   - Press **`[H]`** to turn the headlights ON / OFF. Dual conical beams ($22^\circ$ inner, $30^\circ$ outer) cast illuminated ellipses onto the pavement.
+
+6. **Emissive Lighting ($I_e = K_e$)**:
+   - Material self-illumination independent of scene lights:
+     - Car LED front headlights & continuous rear LED taillight bar (blazing red)
+     - Street lamp lantern glass diffusers (warm amber glow at night)
+     - Tunnel continuous overhead LED ceiling strips (crisp white glow)
+     - Gas station illuminated brand fascias, price totems, and digital pump LCDs
+     - Shimmering 3D collectible gold coins that shine regardless of external shade.
+
+---
+
 ## 📐 Geometric Transformations Demonstrated
 
 | Transformation | Implementation in Code |
@@ -62,7 +103,7 @@ A modern, self-contained texturing architecture with hardware mipmapping and tri
 | **Scaling** | Skyscraper heights, tree canopy tiers, lamp posts, bridge pillar proportions, headlight cones. |
 | **Shearing** | **1. Static Architecture**: Modern deconstructivist city skyscraper sheared along $X$ relative to height $Y$ (`Mat4::shearX(0.22f, 0.0f)`).<br>**2. Dynamic Wind Shearing**: Roadside pine and oak trees sway in real-time breeze using a time-varying shear matrix applied to foliage: `Mat4::shearX(amp * sin(t), amp * cos(t))`. |
 | **Camera Control** | 5 distinct camera perspectives with smooth position and look-at damping. |
-| **Lighting** | Blinn-Phong shading model with directional sunlight/moonlight, point lights for street/tunnel fixtures, and dual car headlight spotlights. |
+| **Illumination** | Complete 5-light model (Ambient, Diffuse, Specular, Point, Spot, Emissive) with Blinn-Phong per-fragment evaluation. |
 | **Continuous Animation** | Continuous 60+ FPS delta-time physics loop with smooth acceleration and braking. |
 
 ---

@@ -200,7 +200,7 @@ public:
         if (notificationTimer > 0.0f && !notificationMsg.empty()) {
             float banW = 540.0f;
             float banH = 38.0f;
-            float banX = (screenWidth > 1020) ? 470.0f : 20.0f;
+            float banX = (screenWidth > 1020) ? 520.0f : 20.0f;
             float banY = (screenWidth > 1020) ? 20.0f : 205.0f;
 
             bool isMilestoneEvent = (notificationMsg.find("CHECKPOINT") != std::string::npos ||
@@ -266,7 +266,7 @@ public:
         // =========================================================
         float dashX = 20.0f;
         float dashY = 20.0f;
-        float dashW = 430.0f;
+        float dashW = 496.0f;
         float dashH = 176.0f;
 
         // 1. Sleek Glassmorphism Card Frame
@@ -291,24 +291,24 @@ public:
         // ---------------------------------------------------------
         // HEADER: TITLE & STATUS BADGES
         // ---------------------------------------------------------
-        drawText(verts, dashX + 16.0f, dashY + 12.0f, "DASHBOARD", 2.2f, 0.92f, 0.96f, 1.0f, 1.0f);
+        drawText(verts, dashX + 14.0f, dashY + 12.0f, "DASH", 2.0f, 0.92f, 0.96f, 1.0f, 1.0f);
 
         // Drive Mode Badge: [MANUAL] or [AUTOPILOT]
         if (isManualDrive) {
-            drawQuad(verts, dashX + 155.0f, dashY + 9.0f, 75.0f, 18.0f, 0.10f, 0.45f, 0.70f, 0.95f);
-            drawText(verts, dashX + 162.0f, dashY + 13.0f, "MANUAL", 1.8f, 1.0f, 1.0f, 1.0f, 1.0f);
+            drawQuad(verts, dashX + 80.0f, dashY + 9.0f, 62.0f, 18.0f, 0.10f, 0.45f, 0.70f, 0.95f);
+            drawText(verts, dashX + 86.0f, dashY + 13.0f, "MANUAL", 1.6f, 1.0f, 1.0f, 1.0f, 1.0f);
 
             // Gear Indicator: [D] or [R]
             if (isReversing) {
-                drawQuad(verts, dashX + 235.0f, dashY + 9.0f, 26.0f, 18.0f, 0.90f, 0.15f, 0.15f, 0.95f);
-                drawText(verts, dashX + 242.0f, dashY + 13.0f, "R", 2.0f, 1.0f, 1.0f, 1.0f, 1.0f);
+                drawQuad(verts, dashX + 146.0f, dashY + 9.0f, 22.0f, 18.0f, 0.90f, 0.15f, 0.15f, 0.95f);
+                drawText(verts, dashX + 152.0f, dashY + 13.0f, "R", 1.8f, 1.0f, 1.0f, 1.0f, 1.0f);
             } else {
-                drawQuad(verts, dashX + 235.0f, dashY + 9.0f, 26.0f, 18.0f, 0.12f, 0.75f, 0.35f, 0.95f);
-                drawText(verts, dashX + 242.0f, dashY + 13.0f, "D", 2.0f, 1.0f, 1.0f, 1.0f, 1.0f);
+                drawQuad(verts, dashX + 146.0f, dashY + 9.0f, 22.0f, 18.0f, 0.12f, 0.75f, 0.35f, 0.95f);
+                drawText(verts, dashX + 152.0f, dashY + 13.0f, "D", 1.8f, 1.0f, 1.0f, 1.0f, 1.0f);
             }
         } else {
-            drawQuad(verts, dashX + 155.0f, dashY + 9.0f, 85.0f, 18.0f, 0.50f, 0.20f, 0.75f, 0.95f);
-            drawText(verts, dashX + 160.0f, dashY + 13.0f, "AUTO DRIVE", 1.6f, 1.0f, 1.0f, 1.0f, 1.0f);
+            drawQuad(verts, dashX + 80.0f, dashY + 9.0f, 88.0f, 18.0f, 0.50f, 0.20f, 0.75f, 0.95f);
+            drawText(verts, dashX + 85.0f, dashY + 13.0f, "AUTOPILOT", 1.5f, 1.0f, 1.0f, 1.0f, 1.0f);
         }
 
         // Zone Name Badge
@@ -319,17 +319,21 @@ public:
         else if (zone == EnvironmentZone::TUNNEL)      { zoneName = "TUNNEL"; zoneCol = m3d::Vec3(0.85f, 0.3f, 0.2f); }
         else if (zone == EnvironmentZone::COUNTRYSIDE) { zoneName = "HIGHWAY"; zoneCol = m3d::Vec3(0.2f, 0.8f, 0.5f); }
 
-        drawQuad(verts, dashX + 270.0f, dashY + 9.0f, 75.0f, 18.0f, zoneCol.x * 0.7f, zoneCol.y * 0.7f, zoneCol.z * 0.7f, 0.95f);
-        drawText(verts, dashX + 276.0f, dashY + 13.0f, zoneName, 1.8f, 1.0f, 1.0f, 1.0f, 1.0f);
+        drawQuad(verts, dashX + 172.0f, dashY + 9.0f, 68.0f, 18.0f, zoneCol.x * 0.7f, zoneCol.y * 0.7f, zoneCol.z * 0.7f, 0.95f);
+        drawText(verts, dashX + 177.0f, dashY + 13.0f, zoneName, 1.7f, 1.0f, 1.0f, 1.0f, 1.0f);
 
         // Day/Night Pill
         if (isNight) {
-            drawQuad(verts, dashX + 352.0f, dashY + 9.0f, 62.0f, 18.0f, 0.15f, 0.20f, 0.45f, 0.95f);
-            drawText(verts, dashX + 358.0f, dashY + 13.0f, "NIGHT", 1.8f, 0.85f, 0.90f, 1.0f, 1.0f);
+            drawQuad(verts, dashX + 244.0f, dashY + 9.0f, 54.0f, 18.0f, 0.15f, 0.20f, 0.45f, 0.95f);
+            drawText(verts, dashX + 249.0f, dashY + 13.0f, "NIGHT", 1.6f, 0.85f, 0.90f, 1.0f, 1.0f);
         } else {
-            drawQuad(verts, dashX + 352.0f, dashY + 9.0f, 62.0f, 18.0f, 0.85f, 0.65f, 0.12f, 0.95f);
-            drawText(verts, dashX + 364.0f, dashY + 13.0f, "DAY", 1.8f, 0.12f, 0.14f, 0.18f, 1.0f);
+            drawQuad(verts, dashX + 244.0f, dashY + 9.0f, 54.0f, 18.0f, 0.85f, 0.65f, 0.12f, 0.95f);
+            drawText(verts, dashX + 254.0f, dashY + 13.0f, "DAY", 1.6f, 0.12f, 0.14f, 0.18f, 1.0f);
         }
+
+        // Shading Model Badge: Radiant Cyan Pill for Blinn-Phong
+        drawQuad(verts, dashX + 302.0f, dashY + 9.0f, 108.0f, 18.0f, 0.10f, 0.52f, 0.85f, 0.95f);
+        drawText(verts, dashX + 307.0f, dashY + 13.0f, "BLINN-PHONG", 1.4f, 1.0f, 1.0f, 1.0f, 1.0f);
 
         // ---------------------------------------------------------
         // ROW 1: FUEL LEVEL
@@ -553,7 +557,7 @@ public:
         } else {
             // Normal Driving Controls Prompt
             drawQuad(verts, row4X, row4Y, row4W, row4H, 0.12f, 0.15f, 0.20f, 0.95f);
-            drawText(verts, row4X + 16.0f, row4Y + 9.0f, "DRIVE: [ARROWS/WASD] | REFUEL: [F] | RESET: [R]", 1.8f, 0.80f, 0.86f, 0.94f, 1.0f);
+            drawText(verts, row4X + 16.0f, row4Y + 9.0f, "DRIVE: [WASD] | LIGHTS: [L/H/N] | SHADING: [B] | REFUEL: [F]", 1.7f, 0.80f, 0.86f, 0.94f, 1.0f);
         }
 
         // =========================================================

@@ -12,10 +12,17 @@ class ModelRenderer {
 public:
     static void setMaterial(const Shader& shader, const m3d::Vec3& diffuse, 
                             float specularIntensity = 0.4f, float shininess = 32.0f,
-                            const m3d::Vec3& emissive = {0, 0, 0}) {
+                            const m3d::Vec3& emissive = {0, 0, 0},
+                            const m3d::Vec3& ambient = {-1, -1, -1}) {
+        m3d::Vec3 amb = (ambient.x >= 0.0f) ? ambient : diffuse * 0.35f;
+        shader.setVec3("material.ambient", amb);
+        shader.setVec3("material.diffuse", diffuse);
+        shader.setVec3("material.specular", m3d::Vec3(specularIntensity));
+        shader.setFloat("material.shininess", shininess);
+        shader.setVec3("material.emissive", emissive);
+        // Backward-compatible uniform aliases
         shader.setVec3("material.diffuseColor", diffuse);
         shader.setVec3("material.specularColor", m3d::Vec3(specularIntensity));
-        shader.setFloat("material.shininess", shininess);
         shader.setVec3("material.emissiveColor", emissive);
     }
 
@@ -39,7 +46,11 @@ public:
         }
 
         // [B] Aerodynamic Carbon Side Skirts / Rocker Panels
-        setMaterial(shader, m3d::Vec3(0.08f, 0.08f, 0.10f), 0.5f, 32.0f);
+        shader.setBool("useTexture", true);
+        shader.setFloat("textureBlend", 0.85f);
+        shader.setVec2("uvScale", m3d::Vec2(2.0f, 16.0f));
+        scene.textures.bind("carbon", 0);
+        setMaterial(shader, m3d::Vec3(0.18f, 0.18f, 0.20f), 0.7f, 64.0f);
         {
             m3d::Mat4 mSkL = carBase * m3d::Mat4::translate(-0.90f, 0.11f, 0.0f) * m3d::Mat4::scale(0.12f, 0.16f, 3.7f);
             shader.setMat4("model", mSkL);
@@ -49,6 +60,9 @@ public:
             shader.setMat4("model", mSkR);
             scene.cubeMesh.draw();
         }
+        scene.textures.unbind(0);
+        shader.setBool("useTexture", false);
+        shader.setVec2("uvScale", m3d::Vec2(1.0f, 1.0f));
 
         // [C] Muscular Widebody Rear Fender Flares (Enclose the rear wheels from all angles!)
         setMaterial(shader, carBodyColor, 0.75f, 64.0f);
@@ -126,7 +140,11 @@ public:
         }
 
         // [I] Aerodynamic Rear Diffuser & Vertical Aero Fins
-        setMaterial(shader, m3d::Vec3(0.08f, 0.08f, 0.10f), 0.5f, 32.0f);
+        shader.setBool("useTexture", true);
+        shader.setFloat("textureBlend", 0.85f);
+        shader.setVec2("uvScale", m3d::Vec2(6.0f, 2.0f));
+        scene.textures.bind("carbon", 0);
+        setMaterial(shader, m3d::Vec3(0.18f, 0.18f, 0.20f), 0.7f, 64.0f);
         {
             m3d::Mat4 mDiff = carBase * m3d::Mat4::translate(0.0f, 0.11f, -1.94f) * m3d::Mat4::scale(1.74f, 0.16f, 0.24f);
             shader.setMat4("model", mDiff);
@@ -140,6 +158,9 @@ public:
                 scene.cubeMesh.draw();
             }
         }
+        scene.textures.unbind(0);
+        shader.setBool("useTexture", false);
+        shader.setVec2("uvScale", m3d::Vec2(1.0f, 1.0f));
 
         // [J] Quad Chrome Exhaust Tips with Heated Thermal Glow
         for (float ex : {-0.62f, -0.46f, 0.46f, 0.62f}) {
@@ -231,7 +252,11 @@ public:
         }
 
         // [N] High-Performance GT Wing / Spoiler with Endplates
-        setMaterial(shader, m3d::Vec3(0.10f, 0.10f, 0.12f), 0.6f, 48.0f);
+        shader.setBool("useTexture", true);
+        shader.setFloat("textureBlend", 0.85f);
+        shader.setVec2("uvScale", m3d::Vec2(8.0f, 2.0f));
+        scene.textures.bind("carbon", 0);
+        setMaterial(shader, m3d::Vec3(0.20f, 0.20f, 0.22f), 0.75f, 64.0f);
         {
             // Aerodynamic Carbon Wing Blade
             m3d::Mat4 mWing = carBase * m3d::Mat4::translate(0.0f, 0.78f, -1.82f) * m3d::Mat4::scale(1.78f, 0.06f, 0.40f);
@@ -256,6 +281,9 @@ public:
             shader.setMat4("model", mStrutR);
             scene.cubeMesh.draw();
         }
+        scene.textures.unbind(0);
+        shader.setBool("useTexture", false);
+        shader.setVec2("uvScale", m3d::Vec2(1.0f, 1.0f));
 
         // [O] Sleek Aerodynamic Door Mirrors
         setMaterial(shader, carBodyColor, 0.75f, 64.0f);

@@ -164,11 +164,23 @@ public:
     bool enableTreeShear{true};
     float globalTime{0.0f};
 
+    // Point lights toggleable via [L] key
+    bool pointLightsActive{true};
+
     SceneManager() = default;
 
     void triggerNotification(const std::string& msg, float duration = 2.5f) {
         notificationMessage = msg;
         notificationTimer = duration;
+    }
+
+    void togglePointLights() {
+        pointLightsActive = !pointLightsActive;
+        if (pointLightsActive) {
+            triggerNotification("POINT LIGHTS: ON (15 ACTIVE FIXTURES)", 2.2f);
+        } else {
+            triggerNotification("POINT LIGHTS: OFF", 2.2f);
+        }
     }
 
     // Refuel car at Gas Station using collected coins
@@ -1558,62 +1570,104 @@ public:
         shader.use();
         shader.setVec3("viewPos", camPos);
 
-        // Sun / Moon Directional Light
-        m3d::Vec3 dirLightColor;
+        // 1. Sun / Moon Directional Light (DirLight: direction, ambient, diffuse, specular)
         m3d::Vec3 dirLightDir;
-        m3d::Vec3 ambientColor;
+        m3d::Vec3 dirAmbient;
+        m3d::Vec3 dirDiffuse;
+        m3d::Vec3 dirSpecular;
+        m3d::Vec3 ambientGlobal;
 
         if (!isNight) {
-            // Daytime: warm bright golden sun angled towards +Z to bathe tunnel portal and bridge in direct sunlight
-            dirLightDir = m3d::Vec3(-0.35f, -0.70f, 0.60f).normalized();
-            dirLightColor = m3d::Vec3(1.05f, 0.98f, 0.90f) * 1.15f;
-            ambientColor = m3d::Vec3(0.42f, 0.44f, 0.48f);
+            // Daytime: warm golden sun angled towards +Z to bathe track in direct sunlight
+            dirLightDir   = m3d::Vec3(-0.35f, -0.70f, 0.60f).normalized();
+            dirAmbient    = m3d::Vec3(0.20f, 0.20f, 0.22f);
+            dirDiffuse    = m3d::Vec3(1.10f, 1.05f, 0.95f) * 1.15f;
+            dirSpecular   = m3d::Vec3(1.00f, 0.98f, 0.95f) * 1.20f;
+            ambientGlobal = m3d::Vec3(0.42f, 0.44f, 0.48f);
         } else {
             // Nighttime: cool dark moonlight
-            dirLightDir = m3d::Vec3(0.3f, -0.7f, 0.5f).normalized();
-            dirLightColor = m3d::Vec3(0.18f, 0.22f, 0.35f) * 0.6f;
-            ambientColor = m3d::Vec3(0.08f, 0.09f, 0.14f);
+            dirLightDir   = m3d::Vec3(0.30f, -0.70f, 0.50f).normalized();
+            dirAmbient    = m3d::Vec3(0.04f, 0.05f, 0.08f);
+            dirDiffuse    = m3d::Vec3(0.18f, 0.22f, 0.35f) * 0.70f;
+            dirSpecular   = m3d::Vec3(0.25f, 0.30f, 0.45f);
+            ambientGlobal = m3d::Vec3(0.08f, 0.09f, 0.14f);
         }
 
         shader.setVec3("dirLight.direction", dirLightDir);
-        shader.setVec3("dirLight.color", dirLightColor);
-        shader.setVec3("ambientGlobal", ambientColor);
+        shader.setVec3("dirLight.ambient", dirAmbient);
+        shader.setVec3("dirLight.diffuse", dirDiffuse);
+        shader.setVec3("dirLight.specular", dirSpecular);
+        shader.setVec3("dirLight.color", dirDiffuse); // Legacy compatibility
+        shader.setVec3("ambientGlobal", ambientGlobal);
 
-        // Point lights (Active Street Lamps + Active Tunnel Lights)
+        // 2. Point Lights (Active Street Lamps + Active Tunnel Lights + Gas Station Canopies)
         int pointLightIdx = 0;
-        const int MAX_POINT_LIGHTS = 16;
+        const int MAX_POINT_LIGHTS = 24;
 
-        // If night, street lamps light up
-        if (isNight) {
-            for (const auto& lamp : streetLamps) {
-                if (pointLightIdx >= MAX_POINT_LIGHTS) break;
-                std::string prefix = "pointLights[" + std::to_string(pointLightIdx) + "].";
-                m3d::Vec3 lampLightPos = lamp.position + m3d::Vec3(0.0f, 5.0f, 0.0f);
-                shader.setVec3(prefix + "position", lampLightPos);
-                // Warm incandescent amber street light glow
-                shader.setVec3(prefix + "color", m3d::Vec3(1.0f, 0.82f, 0.55f));
-                shader.setFloat(prefix + "intensity", 1.8f);
-                shader.setFloat(prefix + "radius", 18.0f);
-                pointLightIdx++;
+        if (pointLightsActive) {
+            // [A] Street Lamps (Active at night: warm incandescent amber glow)
+            if (isNight) {
+                for (const auto& lamp : streetLamps) {
+                    if (pointLightIdx >= MAX_POINT_LIGHTS) break;
+                    std::string prefix = "pointLights[" + std::to_string(pointLightIdx) + "].";
+                    m3d::Vec3 lampLightPos = lamp.position + m3d::Vec3(0.0f, 5.0f, 0.0f);
+                    shader.setVec3(prefix + "position", lampLightPos);
+                    shader.setVec3(prefix + "ambient", m3d::Vec3(0.06f, 0.05f, 0.03f));
+                    shader.setVec3(prefix + "diffuse", m3d::Vec3(1.0f, 0.82f, 0.55f) * 2.2f);
+                    shader.setVec3(prefix + "specular", m3d::Vec3(1.0f, 0.90f, 0.70f) * 1.5f);
+                    shader.setFloat(prefix + "constant", 1.0f);
+                    shader.setFloat(prefix + "linear", 0.09f);
+                    shader.setFloat(prefix + "quadratic", 0.032f);
+                    shader.setFloat(prefix + "radius", 20.0f);
+                    // Backward-compatible properties
+                    shader.setVec3(prefix + "color", m3d::Vec3(1.0f, 0.82f, 0.55f));
+                    shader.setFloat(prefix + "intensity", 1.8f);
+                    pointLightIdx++;
+                }
             }
-        }
 
-        // Tunnel lights: highway tunnels are always illuminated (day & night)
-        bool tunnelLightsOn = true;
-        if (tunnelLightsOn) {
+            // [B] Tunnel Ceiling Lights (Active 24/7 day & night: fluorescent cool white)
             for (const auto& tLight : tunnelCeilingLights) {
                 if (pointLightIdx >= MAX_POINT_LIGHTS) break;
                 std::string prefix = "pointLights[" + std::to_string(pointLightIdx) + "].";
                 shader.setVec3(prefix + "position", tLight.position);
+                shader.setVec3(prefix + "ambient", m3d::Vec3(0.05f, 0.05f, 0.06f));
+                shader.setVec3(prefix + "diffuse", tLight.color * tLight.intensity * 2.2f);
+                shader.setVec3(prefix + "specular", m3d::Vec3(1.0f, 1.0f, 1.0f) * 1.5f);
+                shader.setFloat(prefix + "constant", 1.0f);
+                shader.setFloat(prefix + "linear", 0.09f);
+                shader.setFloat(prefix + "quadratic", 0.032f);
+                shader.setFloat(prefix + "radius", tLight.range);
+                // Backward-compatible properties
                 shader.setVec3(prefix + "color", tLight.color);
                 shader.setFloat(prefix + "intensity", tLight.intensity);
-                shader.setFloat(prefix + "radius", tLight.range);
+                pointLightIdx++;
+            }
+
+            // [C] Gas Station Canopy Downlights (Bright illuminated pump forecourts)
+            for (const auto& st : gasStations) {
+                if (pointLightIdx >= MAX_POINT_LIGHTS) break;
+                std::string prefix = "pointLights[" + std::to_string(pointLightIdx) + "].";
+                m3d::Vec3 canopyLightPos = st.pumpBayCenter + m3d::Vec3(0.0f, 4.4f, 0.0f);
+                float boost = isNight ? 2.6f : 1.4f;
+                shader.setVec3(prefix + "position", canopyLightPos);
+                shader.setVec3(prefix + "ambient", m3d::Vec3(0.08f, 0.08f, 0.08f));
+                shader.setVec3(prefix + "diffuse", m3d::Vec3(1.0f, 0.98f, 0.92f) * boost);
+                shader.setVec3(prefix + "specular", m3d::Vec3(1.0f, 1.0f, 1.0f) * 1.8f);
+                shader.setFloat(prefix + "constant", 1.0f);
+                shader.setFloat(prefix + "linear", 0.07f);
+                shader.setFloat(prefix + "quadratic", 0.024f);
+                shader.setFloat(prefix + "radius", 18.0f);
+                // Backward-compatible properties
+                shader.setVec3(prefix + "color", m3d::Vec3(1.0f, 0.98f, 0.92f));
+                shader.setFloat(prefix + "intensity", boost);
                 pointLightIdx++;
             }
         }
+
         shader.setInt("numPointLights", pointLightIdx);
 
-        // Spotlights: Car Twin Headlights
+        // 3. Spotlights: Car Twin Conical Headlights
         if (headlightsActive) {
             shader.setBool("spotlightsActive", true);
             m3d::Vec3 leftHeadlightPos = carPos + carForward * 1.9f - carRight * 0.65f + carUp * 0.45f;
@@ -1622,17 +1676,37 @@ public:
             // Spotlights slightly angled down toward road surface
             m3d::Vec3 spotDir = (carForward - carUp * 0.12f).normalized();
 
+            m3d::Vec3 spotAmb(0.02f, 0.02f, 0.02f);
+            m3d::Vec3 spotDiff = m3d::Vec3(1.0f, 0.98f, 0.92f) * 3.2f;
+            m3d::Vec3 spotSpec = m3d::Vec3(1.0f, 1.0f, 1.0f) * 2.5f;
+            float cosInner = std::cos(m3d::radians(22.0f));
+            float cosOuter = std::cos(m3d::radians(30.0f));
+
+            // Left Spotlight
             shader.setVec3("leftSpotlight.position", leftHeadlightPos);
             shader.setVec3("leftSpotlight.direction", spotDir);
-            shader.setVec3("leftSpotlight.color", m3d::Vec3(1.0f, 0.98f, 0.92f) * 2.5f);
-            shader.setFloat("leftSpotlight.cutOff", std::cos(m3d::radians(22.0f)));
-            shader.setFloat("leftSpotlight.outerCutOff", std::cos(m3d::radians(30.0f)));
+            shader.setVec3("leftSpotlight.ambient", spotAmb);
+            shader.setVec3("leftSpotlight.diffuse", spotDiff);
+            shader.setVec3("leftSpotlight.specular", spotSpec);
+            shader.setFloat("leftSpotlight.constant", 1.0f);
+            shader.setFloat("leftSpotlight.linear", 0.04f);
+            shader.setFloat("leftSpotlight.quadratic", 0.016f);
+            shader.setFloat("leftSpotlight.cutOff", cosInner);
+            shader.setFloat("leftSpotlight.outerCutOff", cosOuter);
+            shader.setVec3("leftSpotlight.color", spotDiff);
 
+            // Right Spotlight
             shader.setVec3("rightSpotlight.position", rightHeadlightPos);
             shader.setVec3("rightSpotlight.direction", spotDir);
-            shader.setVec3("rightSpotlight.color", m3d::Vec3(1.0f, 0.98f, 0.92f) * 2.5f);
-            shader.setFloat("rightSpotlight.cutOff", std::cos(m3d::radians(22.0f)));
-            shader.setFloat("rightSpotlight.outerCutOff", std::cos(m3d::radians(30.0f)));
+            shader.setVec3("rightSpotlight.ambient", spotAmb);
+            shader.setVec3("rightSpotlight.diffuse", spotDiff);
+            shader.setVec3("rightSpotlight.specular", spotSpec);
+            shader.setFloat("rightSpotlight.constant", 1.0f);
+            shader.setFloat("rightSpotlight.linear", 0.04f);
+            shader.setFloat("rightSpotlight.quadratic", 0.016f);
+            shader.setFloat("rightSpotlight.cutOff", cosInner);
+            shader.setFloat("rightSpotlight.outerCutOff", cosOuter);
+            shader.setVec3("rightSpotlight.color", spotDiff);
         } else {
             shader.setBool("spotlightsActive", false);
         }

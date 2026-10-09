@@ -14,9 +14,9 @@
 #include "hud.hpp"
 #include "screenshot.hpp"
 
-// Global Window State
-int windowWidth = 1280;
-int windowHeight = 720;
+// Global Window State (Full HD 1920x1080)
+int windowWidth = 1920;
+int windowHeight = 1080;
 Camera camera;
 Track track;
 SceneManager scene;
@@ -24,8 +24,8 @@ HUD hud;
 
 bool isPaused = false;
 bool mouseCaptured = false;
-double lastMouseX = 640.0;
-double lastMouseY = 360.0;
+double lastMouseX = 960.0;
+double lastMouseY = 540.0;
 bool firstMouse = true;
 
 // Key state tracking for single-press toggles
@@ -79,29 +79,45 @@ in vec3 VertexColor;
 
 out vec4 FragColor;
 
+// --- Material Definition for Complete Illumination Models ---
 struct Material {
-    vec3 diffuseColor;
-    vec3 specularColor;
-    float shininess;
-    vec3 emissiveColor;
+    vec3 ambient;       // Ambient reflectivity (Ka)
+    vec3 diffuse;       // Diffuse reflectivity (Kd)
+    vec3 specular;      // Specular reflectivity (Ks)
+    float shininess;    // Shininess exponent (alpha)
+    vec3 emissive;      // Self-illumination (Ke)
 };
 
+// --- Directional Light (Sun / Moon) ---
 struct DirLight {
     vec3 direction;
-    vec3 color;
+    vec3 ambient;
+    vec3 diffuse;
+    vec3 specular;
 };
 
+// --- Point Light (Street Lamps, Tunnel Ceiling Fixtures, Gas Station Downlights) ---
 struct PointLight {
     vec3 position;
-    vec3 color;
-    float intensity;
+    vec3 ambient;
+    vec3 diffuse;
+    vec3 specular;
+    float constant;
+    float linear;
+    float quadratic;
     float radius;
 };
 
+// --- Spot Light (Car Twin Conical Headlights) ---
 struct SpotLight {
     vec3 position;
     vec3 direction;
-    vec3 color;
+    vec3 ambient;
+    vec3 diffuse;
+    vec3 specular;
+    float constant;
+    float linear;
+    float quadratic;
     float cutOff;
     float outerCutOff;
 };
@@ -115,7 +131,7 @@ uniform sampler2D diffuseTexture;
 uniform bool useTexture = false;
 uniform float textureBlend = 1.0;
 
-#define MAX_POINT_LIGHTS 16
+#define MAX_POINT_LIGHTS 24
 uniform int numPointLights;
 uniform PointLight pointLights[MAX_POINT_LIGHTS];
 
@@ -126,89 +142,142 @@ uniform SpotLight rightSpotlight;
 uniform vec3 skyColor;
 uniform float sunMultiplier;
 
-vec3 calcPointLight(PointLight light, vec3 normal, vec3 fragPos, vec3 viewDir, vec3 diffColor) {
-    vec3 lightDir = light.position - fragPos;
-    float distance = length(lightDir);
+// =========================================================================
+// Specular Calculation: Pure Blinn-Phong Halfway-Vector Model
+// =========================================================================
+float calcSpecularFactor(vec3 normal, vec3 lightDir, vec3 viewDir, float shininess) {
+    // Blinn-Phong Shading Model: Halfway vector H = normalize(L + V)
+    vec3 halfwayDir = normalize(lightDir + viewDir);
+    float nDotH = max(dot(normal, halfwayDir), 0.0);
+    return pow(nDotH, shininess);
+}
+
+// =========================================================================
+// 1. Directional Light: Ambient + Diffuse + Specular
+// =========================================================================
+vec3 calcDirLight(DirLight light, vec3 normal, vec3 viewDir, vec3 matAmb, vec3 matDiff, vec3 matSpec, float shininess) {
+    vec3 lightDir = normalize(-light.direction);
+
+    // Ambient
+    vec3 ambient = light.ambient * matAmb;
+
+    // Diffuse (Lambertian)
+    float diff = max(dot(normal, lightDir), 0.0);
+    vec3 diffuse = light.diffuse * diff * matDiff;
+
+    // Specular (Phong or Blinn-Phong)
+    vec3 specular = vec3(0.0);
+    if (diff > 0.0) {
+        float specFactor = calcSpecularFactor(normal, lightDir, viewDir, shininess);
+        specular = light.specular * specFactor * matSpec;
+    }
+
+    return (ambient + diffuse + specular) * sunMultiplier;
+}
+
+// =========================================================================
+// 2. Point Light: Ambient + Diffuse + Specular with Distance Attenuation
+// =========================================================================
+vec3 calcPointLight(PointLight light, vec3 normal, vec3 fragPos, vec3 viewDir, vec3 matAmb, vec3 matDiff, vec3 matSpec, float shininess) {
+    vec3 lightVec = light.position - fragPos;
+    float distance = length(lightVec);
     if (distance > light.radius) return vec3(0.0);
-    lightDir = normalize(lightDir);
+    vec3 lightDir = lightVec / distance;
+
+    // Distance Attenuation (Inverse-Square physics with soft radius cutoff)
+    float attenuation = 1.0 / (light.constant + light.linear * distance + light.quadratic * (distance * distance));
+    float radiusFactor = clamp(1.0 - (distance / light.radius), 0.0, 1.0);
+    attenuation *= radiusFactor;
+
+    // Ambient
+    vec3 ambient = light.ambient * matAmb * attenuation;
 
     // Diffuse
     float diff = max(dot(normal, lightDir), 0.0);
-    vec3 diffuse = light.color * diff * diffColor;
+    vec3 diffuse = light.diffuse * diff * matDiff * attenuation;
 
-    // Specular (Blinn-Phong)
-    vec3 halfwayDir = normalize(lightDir + viewDir);
-    float spec = pow(max(dot(normal, halfwayDir), 0.0), material.shininess);
-    vec3 specular = light.color * spec * material.specularColor;
+    // Specular
+    vec3 specular = vec3(0.0);
+    if (diff > 0.0) {
+        float specFactor = calcSpecularFactor(normal, lightDir, viewDir, shininess);
+        specular = light.specular * specFactor * matSpec * attenuation;
+    }
 
-    // Smooth Distance Attenuation
-    float atten = clamp(1.0 - (distance / light.radius), 0.0, 1.0);
-    atten = atten * atten * light.intensity;
-
-    return (diffuse + specular) * atten;
+    return ambient + diffuse + specular;
 }
 
-vec3 calcSpotlight(SpotLight spot, vec3 normal, vec3 fragPos, vec3 viewDir, vec3 diffColor) {
-    vec3 lightDir = normalize(spot.position - fragPos);
+// =========================================================================
+// 3. Spot Light: Ambient + Diffuse + Specular with Conical Falloff & Attenuation
+// =========================================================================
+vec3 calcSpotlight(SpotLight spot, vec3 normal, vec3 fragPos, vec3 viewDir, vec3 matAmb, vec3 matDiff, vec3 matSpec, float shininess) {
+    vec3 lightVec = spot.position - fragPos;
+    float distance = length(lightVec);
+    vec3 lightDir = normalize(lightVec);
+
+    // Conical Beam Cutoff and Smooth Edge Falloff
     float theta = dot(lightDir, normalize(-spot.direction));
     float epsilon = spot.cutOff - spot.outerCutOff;
-    float intensity = clamp((theta - spot.outerCutOff) / epsilon, 0.0, 1.0);
+    float spotIntensity = clamp((theta - spot.outerCutOff) / epsilon, 0.0, 1.0);
 
-    if (intensity <= 0.0) return vec3(0.0);
+    if (spotIntensity <= 0.0) return vec3(0.0);
 
-    float distance = length(spot.position - fragPos);
-    float atten = 1.0 / (1.0 + 0.04 * distance + 0.016 * distance * distance);
+    // Distance Attenuation
+    float attenuation = 1.0 / (spot.constant + spot.linear * distance + spot.quadratic * (distance * distance));
 
+    // Ambient
+    vec3 ambient = spot.ambient * matAmb * attenuation;
+
+    // Diffuse
     float diff = max(dot(normal, lightDir), 0.0);
-    vec3 diffuse = spot.color * diff * diffColor;
+    vec3 diffuse = spot.diffuse * diff * matDiff * attenuation * spotIntensity;
 
-    vec3 halfwayDir = normalize(lightDir + viewDir);
-    float spec = pow(max(dot(normal, halfwayDir), 0.0), material.shininess);
-    vec3 specular = spot.color * spec * material.specularColor;
+    // Specular
+    vec3 specular = vec3(0.0);
+    if (diff > 0.0) {
+        float specFactor = calcSpecularFactor(normal, lightDir, viewDir, shininess);
+        specular = spot.specular * specFactor * matSpec * attenuation * spotIntensity;
+    }
 
-    return (diffuse + specular) * atten * intensity;
+    return ambient + diffuse + specular;
 }
 
+// =========================================================================
+// Main Fragment Shader: Phong Illumination Assembly + Distance Fog
+// =========================================================================
 void main() {
     vec3 norm = normalize(Normal);
     vec3 viewDir = normalize(viewPos - FragPos);
 
-    // Base object diffuse color modulated by vertex color and optional texture
-    vec3 baseColor = material.diffuseColor * VertexColor;
+    // Base surface color modulated by vertex colors and procedural textures
+    vec3 matDiff = material.diffuse * VertexColor;
     if (useTexture) {
         vec4 texSample = texture(diffuseTexture, TexCoords);
-        baseColor = mix(baseColor, texSample.rgb * material.diffuseColor, textureBlend);
+        matDiff = mix(matDiff, texSample.rgb * material.diffuse, textureBlend);
     }
+    vec3 matAmb = material.ambient * (useTexture ? matDiff : VertexColor);
+    vec3 matSpec = material.specular;
 
-    // 1. Ambient Lighting
-    vec3 result = ambientGlobal * baseColor;
+    // 1. Ambient Lighting (Global ambient illumination preventing black voids)
+    vec3 result = ambientGlobal * matAmb;
 
-    // 2. Directional Sunlight / Moonlight (attenuated by sunMultiplier for subterranean tunnel)
-    vec3 lightDir = normalize(-dirLight.direction);
-    float diff = max(dot(norm, lightDir), 0.0);
-    vec3 dirDiffuse = dirLight.color * diff * baseColor * sunMultiplier;
+    // 2. Directional Sunlight / Moonlight (Ambient, Diffuse, Specular via Phong)
+    result += calcDirLight(dirLight, norm, viewDir, matAmb, matDiff, matSpec, material.shininess);
 
-    vec3 halfwayDir = normalize(lightDir + viewDir);
-    float spec = pow(max(dot(norm, halfwayDir), 0.0), material.shininess);
-    vec3 dirSpecular = dirLight.color * spec * material.specularColor * sunMultiplier;
-
-    result += dirDiffuse + dirSpecular;
-
-    // 3. Point Lights (Street lamps & Tunnel fixtures)
+    // 3. Point Lights (Street lamps, tunnel fixtures, gas station downlights)
     for (int i = 0; i < numPointLights && i < MAX_POINT_LIGHTS; ++i) {
-        result += calcPointLight(pointLights[i], norm, FragPos, viewDir, baseColor);
+        result += calcPointLight(pointLights[i], norm, FragPos, viewDir, matAmb, matDiff, matSpec, material.shininess);
     }
 
-    // 4. Car Twin Headlight Spotlights
+    // 4. Spotlights (Car twin front headlights with forward conical road projection)
     if (spotlightsActive) {
-        result += calcSpotlight(leftSpotlight, norm, FragPos, viewDir, baseColor);
-        result += calcSpotlight(rightSpotlight, norm, FragPos, viewDir, baseColor);
+        result += calcSpotlight(leftSpotlight, norm, FragPos, viewDir, matAmb, matDiff, matSpec, material.shininess);
+        result += calcSpotlight(rightSpotlight, norm, FragPos, viewDir, matAmb, matDiff, matSpec, material.shininess);
     }
 
-    // 5. Emissive Glow (Car lights, lamp diffusers)
-    result += material.emissiveColor;
+    // 5. Emissive Lighting (Self-illumination independent of scene lights)
+    result += material.emissive;
 
-    // 6. Subtle Distance Fog
+    // 6. Atmospheric Distance Fog
     float distToCam = length(viewPos - FragPos);
     float fogDensity = 0.007;
     float fogFactor = clamp(1.0 - exp(-distToCam * fogDensity), 0.0, 1.0);
@@ -367,6 +436,14 @@ void processInput(GLFWwindow* window, float dt) {
         keyStates[GLFW_KEY_H] = false;
     }
 
+    // Toggle Point Lights (Street lamps, tunnel ceiling lights, canopy lights) [L]
+    if (glfwGetKey(window, GLFW_KEY_L) == GLFW_PRESS && !keyStates[GLFW_KEY_L]) {
+        scene.togglePointLights();
+        keyStates[GLFW_KEY_L] = true;
+    } else if (glfwGetKey(window, GLFW_KEY_L) == GLFW_RELEASE) {
+        keyStates[GLFW_KEY_L] = false;
+    }
+
     // Cycle Scenic spot [C]
     if (glfwGetKey(window, GLFW_KEY_C) == GLFW_PRESS && !keyStates[GLFW_KEY_C]) {
         camera.nextScenicSpot();
@@ -455,12 +532,21 @@ int main(int argc, char** argv) {
     std::cout << "  [UP / W] Accelerate Forward     [DOWN / S] Brake / Reverse\n";
     std::cout << "  [LEFT / A] Steer Left           [RIGHT / D] Steer Right\n";
     std::cout << "  [M] Toggle Manual / Auto Drive  [R] Reset Car to Garage Start\n";
-    std::cout << "  Camera Controls:\n";
+    std::cout << "  [F] Refuel at Gas Station (1 Coin = +30% Fuel)\n";
+    std::cout << "  ---------------------------------------------------\n";
+    std::cout << "  HOW TO OBSERVE THE 5 LIGHTINGS & BLINN-PHONG SHADING:\n";
+    std::cout << "  Shading Model: Pure Blinn-Phong Halfway-Vector Illumination\n";
+    std::cout << "  [N] Toggle Day / Night (Directional Sun vs. Ambient Moonlight)\n";
+    std::cout << "  [H] Toggle Headlights (Twin Forward Spotlights with Cutoffs)\n";
+    std::cout << "  [L] Toggle Point Lights (15 Active Street & Tunnel Fixtures)\n";
+    std::cout << "  Emissive Lights: Golden Coins, Gas Station Neon, Taillights\n";
+    std::cout << "  ---------------------------------------------------\n";
+    std::cout << "  Camera Perspectives:\n";
     std::cout << "  [1] Chase Cam (Follow Car)      [2] Cockpit Driver View\n";
-    std::cout << "  [3] Birds-Eye Cam               [4] Free Orbit Cam   [5] Scenic Cam\n";
-    std::cout << "  Environment Controls:\n";
-    std::cout << "  [N] Day/Night Mode    [T] Auto Day/Night   [SPACE] Pause/Resume\n";
-    std::cout << "  [K] Toggle Wind Shear [H] Toggle Headlights [P] Screenshot\n";
+    std::cout << "  [3] Birds-Eye Cam               [4] Free Orbit Cam\n";
+    std::cout << "  [5] Scenic Cam   [C] Cycle Scenic Spots (Tunnel/Bridge/Gas Station)\n";
+    std::cout << "  Environment Extras:\n";
+    std::cout << "  [T] Auto Day/Night   [K] Wind Shearing   [SPACE] Pause   [P] Screenshot\n";
     std::cout << "===================================================\n";
 
     // OpenGL Global Configuration
@@ -505,94 +591,77 @@ int main(int argc, char** argv) {
             demoFrame++;
             float spd = 0.0f;
             if (demoFrame <= 15) {
-                // View 1: Golden coins along road near city start
+                // View 1: Blinn-Phong Shading on Car Body & Road in Daytime Sunlight
                 camera.setMode(CameraMode::CHASE);
+                scene.isNight = false;
+                scene.headlightsActive = false;
                 scene.carDistance = 14.0f;
                 scene.coinsCollected = 3;
                 scene.fuel = 88.0f;
                 scene.currentMilestoneIdx = 0;
+                scene.triggerNotification("BLINN-PHONG SHADING: HALFWAY VECTOR (N * H)", 4.0f);
                 track.sample(scene.carDistance, scene.carPos, scene.carForward, scene.carUp, scene.currentZone, spd);
                 scene.carRight = m3d::cross(scene.carForward, scene.carUp).normalized();
                 camera.snapToCar(scene.carPos, scene.carForward, scene.carUp);
             } else if (demoFrame <= 30) {
-                // View 2: City Gateway Gas Station (Station 1) with car pulling into refuel bay
+                // View 2: Nighttime Twin Headlight Conical Spotlights & Road Illumination
                 camera.setMode(CameraMode::CHASE);
+                scene.isNight = true;
+                scene.headlightsActive = true;
+                scene.carDistance = 16.0f;
+                scene.coinsCollected = 3;
+                scene.fuel = 85.0f;
+                scene.triggerNotification("SPOTLIGHTS: TWIN CONICAL BEAMS (22-30 DEG)", 4.0f);
+                track.sample(scene.carDistance, scene.carPos, scene.carForward, scene.carUp, scene.currentZone, spd);
+                scene.carRight = m3d::cross(scene.carForward, scene.carUp).normalized();
+                camera.snapToCar(scene.carPos, scene.carForward, scene.carUp);
+            } else if (demoFrame <= 45) {
+                // View 3: Point Lights & Emissive LED Strips inside Tunnel Vault
+                camera.setMode(CameraMode::SCENIC_SIDE);
+                camera.currentScenicSpot = 1; // Inside Tunnel Vault
+                scene.isNight = false;
+                scene.headlightsActive = true;
+                scene.carDistance = track.cumulativeDistances[14];
+                scene.triggerNotification("POINT LIGHTS: FLUORESCENT TUNNEL FIXTURES", 4.0f);
+                track.sample(scene.carDistance, scene.carPos, scene.carForward, scene.carUp, scene.currentZone, spd);
+            } else if (demoFrame <= 60) {
+                // View 4: Gas Station Canopy Downlights & Neon Emissive Signage at Night
+                camera.setMode(CameraMode::CHASE);
+                scene.isNight = true;
+                scene.headlightsActive = true;
                 scene.carPos = m3d::Vec3(25.5f, 0.0f, 7.5f);
                 scene.carForward = m3d::Vec3(0.85f, 0.0f, -0.52f).normalized();
                 scene.carRight = m3d::cross(scene.carForward, m3d::Vec3(0.0f, 1.0f, 0.0f)).normalized();
                 scene.carUp = m3d::Vec3(0.0f, 1.0f, 0.0f);
                 scene.isNearGasStation = true;
                 scene.activeStationName = "City Gateway Gas Station";
-                scene.coinsCollected = 4;
+                scene.coinsCollected = 5;
                 scene.fuel = 62.0f;
-                scene.triggerNotification("AT GAS STATION! PRESS [F] TO REFUEL (+30% / 1 COIN)", 4.0f);
-                camera.snapToCar(scene.carPos, scene.carForward, scene.carUp);
-            } else if (demoFrame <= 45) {
-                // View 3: Approaching Milestone Gate 2 (Grand River Bridge) with crimson & white fluttering flags
-                camera.setMode(CameraMode::CHASE);
-                scene.carDistance = track.cumulativeDistances[9] - 12.0f;
-                scene.currentMilestoneIdx = 1;
-                scene.coinsCollected = 6;
-                scene.fuel = 75.0f;
-                scene.triggerNotification("* CHECKPOINT 2/5: GRAND RIVER BRIDGE! +2 COINS *", 4.0f);
-                track.sample(scene.carDistance, scene.carPos, scene.carForward, scene.carUp, scene.currentZone, spd);
-                scene.carRight = m3d::cross(scene.carForward, scene.carUp).normalized();
-                camera.snapToCar(scene.carPos, scene.carForward, scene.carUp);
-            } else if (demoFrame <= 60) {
-                // View 4: Countryside Highway Oasis (Gas Station 2) with roadside price totem and pumps
-                camera.setMode(CameraMode::CHASE);
-                scene.carPos = m3d::Vec3(3.0f, 0.0f, -73.0f);
-                scene.carForward = m3d::Vec3(0.20f, 0.0f, -0.98f).normalized();
-                scene.carRight = m3d::cross(scene.carForward, m3d::Vec3(0.0f, 1.0f, 0.0f)).normalized();
-                scene.carUp = m3d::Vec3(0.0f, 1.0f, 0.0f);
-                scene.isNearGasStation = true;
-                scene.activeStationName = "Countryside Highway Oasis";
-                scene.coinsCollected = 9;
-                scene.fuel = 45.0f;
-                scene.triggerNotification("AT COUNTRYSIDE OASIS! PRESS [F] TO REFUEL", 4.0f);
+                scene.triggerNotification("POINT LIGHTS: GAS STATION CANOPY DOWNLIGHTS", 4.0f);
                 camera.snapToCar(scene.carPos, scene.carForward, scene.carUp);
             } else if (demoFrame <= 75) {
-                // View 5: High-speed driving approaching Milestone 4 (Countryside Speed Trap) with emerald waving flags
-                camera.setMode(CameraMode::CHASE);
-                scene.carDistance = track.cumulativeDistances[24] - 14.0f;
-                scene.carSpeed = 22.0f; // 79.2 km/h
-                scene.coinsCollected = 11;
-                scene.fuel = 92.0f;
-                scene.currentMilestoneIdx = 3;
-                scene.triggerNotification("* CHECKPOINT 4/5: COUNTRYSIDE SPEED TRAP! *", 4.0f);
+                // View 5: Grand River Bridge Crossing & Water Specular Highlights
+                camera.setMode(CameraMode::SCENIC_SIDE);
+                camera.currentScenicSpot = 0; // River Bridge
+                scene.isNight = false;
+                scene.headlightsActive = false;
+                scene.carDistance = track.cumulativeDistances[8];
+                scene.coinsCollected = 4;
+                scene.fuel = 75.0f;
+                scene.triggerNotification("BLINN-PHONG SPECULAR ON RIVER & ARCH BRIDGE", 4.0f);
                 track.sample(scene.carDistance, scene.carPos, scene.carForward, scene.carUp, scene.currentZone, spd);
-                scene.carRight = m3d::cross(scene.carForward, scene.carUp).normalized();
-                camera.snapToCar(scene.carPos, scene.carForward, scene.carUp);
             } else if (demoFrame <= 90) {
-                // View 6: Approaching Milestone 5 Finish Arch with Center Crossed Checkered Racing Flags (🏁 X 🏁)
+                // View 6: Golden Coin Collectibles with Emissive Glow and Specular Highlights
                 camera.setMode(CameraMode::CHASE);
-                scene.carDistance = track.cumulativeDistances[33] - 14.0f;
-                scene.carSpeed = 15.0f;
-                scene.coinsCollected = 16;
-                scene.fuel = 84.0f;
-                scene.currentMilestoneIdx = 4;
-                scene.triggerNotification("* CHECKPOINT 5/5: GRAND PRIX LAP FINISH! *", 4.0f);
+                scene.isNight = false;
+                scene.headlightsActive = false;
+                scene.carDistance = track.cumulativeDistances[24] - 14.0f;
+                scene.coinsCollected = 8;
+                scene.fuel = 78.0f;
+                scene.triggerNotification("EMISSIVE GLOW & GOLD SPECULAR HIGHLIGHTS", 4.0f);
                 track.sample(scene.carDistance, scene.carPos, scene.carForward, scene.carUp, scene.currentZone, spd);
                 scene.carRight = m3d::cross(scene.carForward, scene.carUp).normalized();
                 camera.snapToCar(scene.carPos, scene.carForward, scene.carUp);
-            } else if (demoFrame <= 105) {
-                // View 7: River water caustics and bridge stone quays (Scenic Spot 3)
-                camera.setMode(CameraMode::SCENIC_SIDE);
-                camera.currentScenicSpot = 2; // Grand River Bridge Overlook
-                scene.carDistance = track.cumulativeDistances[10];
-                track.sample(scene.carDistance, scene.carPos, scene.carForward, scene.carUp, scene.currentZone, spd);
-            } else if (demoFrame <= 120) {
-                // View 8: Curved tunnel stone masonry vault (Scenic Spot 2)
-                camera.setMode(CameraMode::SCENIC_SIDE);
-                camera.currentScenicSpot = 1; // Inside Tunnel Vault
-                scene.carDistance = track.cumulativeDistances[14];
-                track.sample(scene.carDistance, scene.carPos, scene.carForward, scene.carUp, scene.currentZone, spd);
-            } else if (demoFrame <= 135) {
-                // View 9: City skyline and skyscraper window grid textures (Scenic Spot 5)
-                camera.setMode(CameraMode::SCENIC_SIDE);
-                camera.currentScenicSpot = 4; // City Skyline
-                scene.carDistance = 20.0f;
-                track.sample(scene.carDistance, scene.carPos, scene.carForward, scene.carUp, scene.currentZone, spd);
             }
         }
 
@@ -738,9 +807,10 @@ int main(int argc, char** argv) {
                    << " | Speed: " << (scene.carSpeed * 3.6f) << " km/h | ";
             }
 
-            ss << "Mode: " << (scene.isNight ? "NIGHT" : "DAY")
-               << " | Headlights: " << (scene.headlightsActive ? "ON" : "OFF")
-               << " | Shearing: " << (scene.enableTreeShear ? "ACTIVE" : "OFF")
+            ss << "Mode: " << (scene.isNight ? "NIGHT" : "DAY") << " [N]"
+               << " | Shading: BLINN-PHONG"
+               << " | Headlights: " << (scene.headlightsActive ? "ON" : "OFF") << " [H]"
+               << " | PointLights: " << (scene.pointLightsActive ? "ON" : "OFF") << " [L]"
                << " | Camera: ";
 
             switch (camera.mode) {
@@ -763,23 +833,17 @@ int main(int argc, char** argv) {
         // Automated demonstration frame capture if requested via --capture-demos
         if (captureDemos) {
             if (demoFrame == 15) {
-                ScreenshotUtil::saveBMP("game_coins_on_road.bmp", windowWidth, windowHeight);
+                ScreenshotUtil::saveBMP("lighting_phong_daytime_car.bmp", windowWidth, windowHeight);
             } else if (demoFrame == 30) {
-                ScreenshotUtil::saveBMP("game_gas_station_1_city.bmp", windowWidth, windowHeight);
+                ScreenshotUtil::saveBMP("lighting_phong_night_headlights_spot.bmp", windowWidth, windowHeight);
             } else if (demoFrame == 45) {
-                ScreenshotUtil::saveBMP("game_milestone_bridge_gate.bmp", windowWidth, windowHeight);
+                ScreenshotUtil::saveBMP("lighting_point_lights_tunnel.bmp", windowWidth, windowHeight);
             } else if (demoFrame == 60) {
-                ScreenshotUtil::saveBMP("game_gas_station_2_countryside.bmp", windowWidth, windowHeight);
+                ScreenshotUtil::saveBMP("lighting_gas_station_canopy_point.bmp", windowWidth, windowHeight);
             } else if (demoFrame == 75) {
-                ScreenshotUtil::saveBMP("game_milestone_countryside_flags.bmp", windowWidth, windowHeight);
+                ScreenshotUtil::saveBMP("lighting_bridge_scenic.bmp", windowWidth, windowHeight);
             } else if (demoFrame == 90) {
-                ScreenshotUtil::saveBMP("game_milestone_finish_crossed_flags.bmp", windowWidth, windowHeight);
-            } else if (demoFrame == 105) {
-                ScreenshotUtil::saveBMP("texture_bridge_river_water.bmp", windowWidth, windowHeight);
-            } else if (demoFrame == 120) {
-                ScreenshotUtil::saveBMP("texture_tunnel_stone_masonry.bmp", windowWidth, windowHeight);
-            } else if (demoFrame == 135) {
-                ScreenshotUtil::saveBMP("texture_city_skyscrapers.bmp", windowWidth, windowHeight);
+                ScreenshotUtil::saveBMP("lighting_coins_emissive_shine.bmp", windowWidth, windowHeight);
                 glfwSetWindowShouldClose(window, true);
             }
         }
